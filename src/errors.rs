@@ -12,6 +12,7 @@ pub type ServiceResult<T> = Result<T, ServiceError>;
 pub enum ServiceError {
     Router(String),
     Http(HttpError),
+    Serializer(String),
     Other(String),
 }
 
@@ -23,6 +24,7 @@ impl fmt::Display for ServiceError {
         ServiceError::Http(ref err) => write!(f, "Hyper http error: {}", err),
         ServiceError::Router(_) => todo!(),
         ServiceError::Other(_) => todo!(),
+        ServiceError::Serializer(_) => todo!(),
 
     }
   }
@@ -32,4 +34,19 @@ impl From<HttpError> for ServiceError {
   fn from(e: HttpError) -> Self {
       Self::Http(e)
   }
+}
+
+///
+/// Error in retrieving user info.
+///
+#[derive(Debug)]
+pub enum UserInfoError<RE>
+where
+  RE: std::error::Error + 'static,
+{
+  ClaimsVerification,
+  Parse,
+  Request(RE),
+  Response,
+  Other,
 }
