@@ -1,0 +1,117 @@
+log:
+    level: info
+    format: json
+    show_sensitive_values: true
+
+serve:
+    public:
+        port: 4444
+        host: localhost
+        cors:
+            enabled: true
+            allowed_origins:
+                - https://example.com
+                - https://*.example.com
+            allowed_methods:
+                - POST
+                - GET
+                - PUT
+                - PATCH
+                - DELETE
+            allowed_headers:
+                - Authorize
+                - Content-Type
+            exposed_headers:
+                - Content-Type
+            allow_credentials: true
+            max_age: 10
+            debug: true
+        access_log:
+            disable_for_health: false
+    admin:
+        port: 4445
+        host: localhost
+        cors:
+            enabled: true
+            allowed_origins:
+                - https://example.com
+                - https://*.example.com
+            allowed_methods:
+                - POST
+                - GET
+                - PUT
+                - PATCH
+                - DELETE
+            allowed_headers:
+                - Authorize
+                - Content-Type
+            exposed_headers:
+                - Content-Type
+            allow_credentials: true
+            max_age: 10
+            debug: true
+        access_log:
+            disable_for_health: false
+    tls:
+        key:
+            base64: hello
+        cert:
+            base64: hello
+        allow_termination_from:
+            - 127.0.0.1/32
+    cookies:
+        same_site_mode: Lax
+        same_site_legacy_workaround: false
+dsn: memory
+webfinger:
+    jwks:
+        broadcast_keys:
+            - charon.openid.id-token
+    oidc_discovery:
+        client_registration_url: https://example.com/clients
+        supported_claims:
+            - email
+            - username
+        supported_scopes:
+            - email
+oidc:
+    subject_identifiers:
+        supported_types:
+            - pairwise
+            - public
+        pairwise:
+            salt: example
+    dynamic_client_registration:
+        default_scope:
+            - openid
+            - offline
+            - offline_access
+urls:
+    self:
+        issuer: https://localhost:4444
+        public: https://localhost:4444
+    login: https://localhost:3000/login
+    consent: https://localhost:3000/consent
+    logout: https://localhost:3000/logout
+    error: https://localhost:3000/error
+    post_logout_redirect: https://localhost:3000/
+ttl:
+    login_consent_request: 1h
+    access_token: 1h
+    refresh_token: 720h
+    id_token: 1h
+    auth_code: 10m
+oauth2:
+    expose_internal_errors: true
+    include_legacy_error_fields: true
+    hashers:
+        bcrypt:
+            cost: 20
+    pkce:
+        enforced: true
+        enforced_for_public_clients: true
+secrets:
+    system:
+        - some-random-system-secret
+    cookie:
+        - some-random-cookie-secret
