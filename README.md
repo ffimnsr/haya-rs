@@ -1,9 +1,7 @@
-# Charon
+# Haya (Doorkeeper)
 
-> Throw open in answer to my knowing the silent places and empty void of stern Persephone,
-> and send forth the multitude that lurk in hollow night; let the ferryman row back across
-> the Styx with groaning bark.
-> - Teiresias
+> Hold my hand in yours, and we will not fear what hands like ours can do.
+> - The Epic Of Gilgamesh
 
 ## License
 

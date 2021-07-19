@@ -66,7 +66,7 @@ dsn: memory
 webfinger:
     jwks:
         broadcast_keys:
-            - charon.openid.id-token
+            - haya.openid.id-token
     oidc_discovery:
         client_registration_url: https://example.com/clients
         supported_claims:

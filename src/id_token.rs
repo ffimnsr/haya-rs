@@ -31,14 +31,14 @@ pub struct IdentityClaims {
     pub nonce: String,
 
     /// String specifying an Authentication Context Class Reference value that identifies the Authentication Context Class that the authentication performed satisfied
-    #[serde(rename = "acr")]
+    #[serde(rename = "acr", skip_serializing_if = "Option::is_none")]
     pub auth_class_reference: Option<String>,
 
     /// JSON array of strings that are identifiers for authentication methods used in the authentication
-    #[serde(rename = "amr")]
+    #[serde(rename = "amr", skip_serializing_if = "Option::is_none")]
     pub auth_methods_references: Option<Vec<String>>,
 
     /// The party to which the ID Token was issued
-    #[serde(rename = "azp")]
+    #[serde(rename = "azp", skip_serializing_if = "Option::is_none")]
     pub authorized_party: Option<String>,
 }

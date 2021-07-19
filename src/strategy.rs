@@ -1,7 +1,5 @@
-
 fn revoke_authentication_session() {
     let sid = revoke_authentication_cookie();
-
 }
 
 fn revoke_authentication_cookie() -> String {

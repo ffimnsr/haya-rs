@@ -16,68 +16,123 @@ pub(crate) struct Config {
 
 impl Config {
     /// Get the issuer url.
-    pub(crate) fn get_issuer_url(&self) -> &String {
-        &self.urls.self_ref.issuer.to_string()
+    pub(crate) fn get_issuer_url(&self) -> String {
+        self.urls.self_ref.issuer.to_string()
     }
 
     /// Get the public url.
-    pub(crate) fn get_public_url(&self) -> &String {
-        &self.urls.self_ref.public.to_string()
+    pub(crate) fn get_public_url(&self) -> String {
+        self.urls.self_ref.public.to_string()
     }
 
     /// Get the authorize url.
-    pub(crate) fn get_authorization_url(&self) -> &String {
-        let auth_url = &self.urls.self_ref.public.join("/authorize")
+    pub(crate) fn get_authorization_url(&self) -> String {
+        let url = &self
+            .urls
+            .self_ref
+            .public
+            .join("/authorize")
             .expect("Unable to join paths for authorize url");
-        &auth_url.to_string()
+        url.to_string()
     }
 
     /// Get the device authorize url.
-    pub(crate) fn get_device_authorization_url(&self) -> &String {
-        let auth_url = &self.urls.self_ref.public.join("/authorize/device")
+    pub(crate) fn get_device_authorization_url(&self) -> String {
+        let url = &self
+            .urls
+            .self_ref
+            .public
+            .join("/authorize/device")
             .expect("Unable to join paths for authorize url");
-        &auth_url.to_string()
+        url.to_string()
     }
 
     /// Get the token url.
-    pub(crate) fn get_token_url(&self) -> &String {
-        let auth_url = &self.urls.self_ref.public.join("/token")
+    pub(crate) fn get_token_url(&self) -> String {
+        let url = &self
+            .urls
+            .self_ref
+            .public
+            .join("/token")
             .expect("Unable to join paths for token url");
-        &token_url.to_string()
+        url.to_string()
     }
 
     /// Get the introspection url.
-    pub(crate) fn get_introspection_url(&self) -> &String {
-        let introspection_url = &self.urls.self_ref.public.join("/introspection")
+    pub(crate) fn get_introspection_url(&self) -> String {
+        let url = &self
+            .urls
+            .self_ref
+            .public
+            .join("/introspection")
             .expect("Unable to join paths for introspection url");
-        &introspection_url.to_string()
+        url.to_string()
     }
 
     /// Get the userinfo url.
-    pub(crate) fn get_userinfo_url(&self) -> &String {
-        let userinfo_url = &self.urls.self_ref.public.join("/userinfo")
+    pub(crate) fn get_userinfo_url(&self) -> String {
+        let url = &self
+            .urls
+            .self_ref
+            .public
+            .join("/userinfo")
             .expect("Unable to join paths for userinfo url");
-        &userinfo_url.to_string()
+        url.to_string()
     }
 
     /// Get the logout url.
-    pub(crate) fn get_logout_url(&self) -> &String {
-        &self.urls.self_ref.public.to_string()
+    pub(crate) fn get_logout_url(&self) -> String {
+        let url = &self
+            .urls
+            .self_ref
+            .public
+            .join("/logout")
+            .expect("Unable to join paths for userinfo url");
+        url.to_string()
     }
 
     /// Get the client registration url.
-    pub(crate) fn get_client_registration_url(&self) -> &String {
-        &self.urls.self_ref.public.to_string()
+    pub(crate) fn get_client_registration_url(&self) -> String {
+        let url = &self
+            .urls
+            .self_ref
+            .public
+            .join("/userinfo")
+            .expect("Unable to join paths for userinfo url");
+        url.to_string()
     }
 
     /// Get the backchannel authentications url.
-    pub(crate) fn get_backchannel_authentication_url(&self) -> &String {
-        &self.urls.self_ref.public.to_string()
+    pub(crate) fn get_backchannel_authentication_url(&self) -> String {
+        let url = &self
+            .urls
+            .self_ref
+            .public
+            .join("/userinfo")
+            .expect("Unable to join paths for userinfo url");
+        url.to_string()
     }
 
     /// Get the jwks certs url.
-    pub(crate) fn get_jwks_certs_url(&self) -> &String {
-        &self.urls.self_ref.public.to_string()
+    pub(crate) fn get_jwks_certs_url(&self) -> String {
+        let url = &self
+            .urls
+            .self_ref
+            .public
+            .join("/certs")
+            .expect("Unable to join paths for userinfo url");
+        url.to_string()
+    }
+
+    /// Get the revocation url.
+    pub(crate) fn get_revocation_url(&self) -> String {
+        let url = &self
+            .urls
+            .self_ref
+            .public
+            .join("/revoke")
+            .expect("Unable to join paths for userinfo url");
+        url.to_string()
     }
 }
 

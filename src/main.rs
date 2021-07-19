@@ -1,9 +1,10 @@
-//! This module is the main entrypoint for charon auth.
+//! This module is the main entrypoint for haya auth.
 
 use std::env;
 use std::fs::File;
 use std::sync::Arc;
 
+use clap::App;
 use hyper::{Body, Method, Request, Response, Server, StatusCode};
 use log::{error, info};
 use routerify::{Router, RouterService};
@@ -13,21 +14,27 @@ pub(crate) use hyper::header as HeaderValues;
 
 use crate::config::Config;
 use crate::db::get_db_pool;
-use crate::errors::{ApiError, ApiResult, ServiceError, ServiceResult};
 use crate::discovery::{handler_provider_configuration, handler_webfinger};
+use crate::errors::{ApiError, ApiResult, ServiceError, ServiceResult};
 use crate::well_known::WellKnown;
 
+mod authentication;
+mod claims;
 mod config;
+mod db;
 mod discovery;
+mod end_session;
 mod errors;
 mod id_token;
-mod mime;
-mod well_known;
 mod introspection;
+mod mime;
 mod strategy;
-mod db;
+mod well_known;
 
+const APP_NAME: &str = env!("CARGO_PKG_NAME");
+const APP_DESCRIPTION: &str = env!("CARGO_PKG_DESCRIPTION");
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
 const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
 
 async fn handler_index(_req: Request<Body>) -> ApiResult<Response<Body>> {
@@ -101,14 +108,17 @@ async fn error_handler(err: routerify::RouteError) -> Response<Body> {
 
 fn router(config_path: &String) -> ServiceResult<Router<Body, ApiError>> {
     let dbpool = get_db_pool()?;
-    let config = get_config(&config_path)?;
+    let config = parse_config(&config_path)?;
 
     Router::<Body, ApiError>::builder()
         .data(config.clone())
         .data(dbpool.clone())
         .get("/", handler_index)
         .get("/.well-known/oauth-authorization-server", handler_index)
-        .get("/.well-known/openid-configuration", handler_provider_configuration)
+        .get(
+            "/.well-known/openid-configuration",
+            handler_provider_configuration,
+        )
         .get("/.well-known/webfinger", handler_webfinger)
         .get("/authorize", handler_index)
         .get("/authorize/device", handler_index)
@@ -129,9 +139,9 @@ fn router(config_path: &String) -> ServiceResult<Router<Body, ApiError>> {
         .map_err(|e| ServiceError::Router(e.to_string()))
 }
 
-fn get_config(config_path: &String) -> ServiceResult<Arc<Config>> {
-    let config_file = File::open(config_path)
-        .map_err(|e| ServiceError::Io(e.to_string()))?;
+fn parse_config(config_path: &String) -> ServiceResult<Arc<Config>> {
+    let config_file =
+        File::open(config_path).map_err(|e| ServiceError::Io(e.to_string()))?;
     let config = serde_yaml::from_reader(config_file)
         .map(|u| Arc::new(u))
         .map_err(|e| ServiceError::Parser(e.to_string()));
@@ -144,14 +154,20 @@ async fn main() -> ServiceResult<()> {
     dotenv::dotenv().ok();
 
     if env::var("RUST_LOG").is_err() {
-        env::set_var("RUST_LOG", "charon=info,hyper=info");
+        env::set_var("RUST_LOG", "haya=info,hyper=info");
     }
 
     env_logger::init();
 
     let config_path = format!("{}/config.yaml", MANIFEST_DIR);
 
-    info!("Booting up Charon OP v{}", VERSION);
+    let _ = App::new(APP_NAME)
+        .version(VERSION)
+        .author(AUTHORS)
+        .about(APP_DESCRIPTION)
+        .get_matches();
+
+    info!("Booting up Haya OP v{}", VERSION);
     info!("Config file: {}", config_path);
 
     let router = router(&config_path)?;
@@ -159,7 +175,7 @@ async fn main() -> ServiceResult<()> {
         RouterService::new(router).map_err(|e| ServiceError::Router(e.to_string()))?;
 
     let addr = ([0, 0, 0, 0], 8008).into();
-    info!("Charon OP is now listening at {}", addr);
+    info!("Haya OP is now listening at {}", addr);
 
     let server = Server::bind(&addr).serve(service);
 
