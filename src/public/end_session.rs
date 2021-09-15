@@ -3,7 +3,6 @@ use routerify::prelude::*;
 
 use crate::config::Config;
 use crate::errors::{ApiError, ApiResult};
-use crate::well_known::WellKnown;
 use crate::{HeaderValues, MimeValues};
 
 pub(crate) async fn handler_get_end_session(

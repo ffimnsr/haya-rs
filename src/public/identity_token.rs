@@ -2,8 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
-pub struct IdentityClaims {
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IdentityToken {
     /// Issuer identifier for the Issuer of the response
     #[serde(rename = "iss")]
     pub issuer: String,
@@ -16,7 +16,8 @@ pub struct IdentityClaims {
     #[serde(rename = "aud")]
     pub audience: String,
 
-    /// Expiration time on or after which the ID Token MUST NOT be accepted for processing
+    /// Expiration time on or after which the ID Token MUST NOT be accepted for
+    /// processing
     #[serde(rename = "exp")]
     pub expiration_time: usize,
 
@@ -27,14 +28,18 @@ pub struct IdentityClaims {
     /// Time when the End-User authentication occurred
     pub auth_time: usize,
 
-    /// String value used to associate a Client session with an ID Token, and to mitigate replay attacks
+    /// String value used to associate a Client session with an ID Token, and to
+    /// mitigate replay attacks.
     pub nonce: String,
 
-    /// String specifying an Authentication Context Class Reference value that identifies the Authentication Context Class that the authentication performed satisfied
+    /// String specifying an Authentication Context Class Reference value that
+    /// identifies the Authentication Context Class that the authentication
+    /// performed satisfied.
     #[serde(rename = "acr", skip_serializing_if = "Option::is_none")]
     pub auth_class_reference: Option<String>,
 
-    /// JSON array of strings that are identifiers for authentication methods used in the authentication
+    /// JSON array of strings that are identifiers for authentication methods
+    /// used in the authentication.
     #[serde(rename = "amr", skip_serializing_if = "Option::is_none")]
     pub auth_methods_references: Option<Vec<String>>,
 
