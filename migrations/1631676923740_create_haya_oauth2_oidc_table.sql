@@ -40,4 +40,5 @@ CREATE INDEX hydra_oauth2_oidc_request_id_idx
     ON public.hydra_oauth2_oidc USING btree
     (request_id ASC NULLS LAST)
     TABLESPACE pg_default;
+
 -- !DOWN

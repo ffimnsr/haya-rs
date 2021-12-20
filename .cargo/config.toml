@@ -1,5 +1,10 @@
+[alias]
+b = "build --offline"
+c = "check --offline"
+t = "test -- --nocapture --color always"
+
 [build]
-rustc-wrapper = "sccache"
+# rustc-wrapper = "sccache"
 incremental = true
 
 [target.x86_64-unknown-linux-gnu]

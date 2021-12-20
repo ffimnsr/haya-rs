@@ -1,19 +1,22 @@
+use super::{
+    AddrParseError, GenericError, HttpError, HyperError, IoError, PgError, VarError,
+    YamlParseError,
+};
 use std::{error, fmt};
-use super::{HttpError, GenericError};
 
 pub(crate) type ServiceResult<T> = Result<T, ServiceError>;
 
 #[derive(Debug)]
 #[non_exhaustive]
 pub(crate) enum ServiceError {
-    Router(String),
+    AddrParser(AddrParseError),
+    Database(PgError),
     Http(HttpError),
-    Database(String),
-    Env(String),
-    Io(String),
-    Serializer(String),
-    Parser(String),
-    Other(String),
+    Hyper(HyperError),
+    Io(IoError),
+    Router(GenericError),
+    Var(VarError),
+    YamlParser(YamlParseError),
 }
 
 impl error::Error for ServiceError {}
@@ -21,14 +24,14 @@ impl error::Error for ServiceError {}
 impl fmt::Display for ServiceError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            ServiceError::Http(ref err) => write!(f, "Hyper http error: {}", err),
-            ServiceError::Router(_) => todo!(),
-            ServiceError::Other(_) => todo!(),
-            ServiceError::Serializer(_) => todo!(),
-            ServiceError::Parser(ref err) => write!(f, "Parser error: {}", err),
-            ServiceError::Io(_) => todo!(),
-            ServiceError::Database(_) => todo!(),
-            ServiceError::Env(_) => todo!(),
+            Self::AddrParser(ref err) => write!(f, "Addr parser error: {}", err),
+            Self::Database(ref err) => write!(f, "Database error: {}", err),
+            Self::Http(ref err) => write!(f, "Hyper http error: {}", err),
+            Self::Hyper(ref err) => write!(f, "Hyper error: {}", err),
+            Self::Io(ref err) => write!(f, "Io error: {}", err),
+            Self::Router(ref err) => write!(f, "Router error: {}", err),
+            Self::Var(ref err) => write!(f, "Var env error: {}", err),
+            Self::YamlParser(ref err) => write!(f, "Yaml parser error: {}", err),
         }
     }
 }
@@ -38,4 +41,3 @@ impl From<HttpError> for ServiceError {
         Self::Http(e)
     }
 }
-

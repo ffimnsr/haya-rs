@@ -45,4 +45,5 @@ CREATE UNIQUE INDEX hydra_oauth2_authentication_request_veri_idx
     ON public.hydra_oauth2_authentication_request USING btree
     (verifier ASC NULLS LAST)
     TABLESPACE pg_default;
+
 -- !DOWN

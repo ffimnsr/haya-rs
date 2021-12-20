@@ -1,21 +1,19 @@
 //! This module is the main entrypoint for haya auth.
 
-use std::borrow::BorrowMut;
-use std::env;
-
-use clap::App;
-
 pub(crate) use crate::mime as MimeValues;
+use clap::App;
 pub(crate) use hyper::header as HeaderValues;
+use std::env;
 
 use crate::config::Config;
 use crate::errors::ServiceResult;
 
 mod config;
-mod cors;
 mod db;
+mod defaults;
 mod errors;
 mod mime;
+mod models;
 mod public;
 
 const APP_NAME: &str = env!("CARGO_PKG_NAME");
@@ -49,7 +47,5 @@ async fn main() -> ServiceResult<()> {
     log::info!("Config file: {}", config_path);
 
     let db = db::get_db_pool()?;
-    public::serve(config, db.clone()).await?;
-
-    Ok(())
+    public::serve(config, db.clone()).await
 }

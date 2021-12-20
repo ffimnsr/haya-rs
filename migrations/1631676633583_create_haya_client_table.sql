@@ -2,7 +2,7 @@
 -- !UP
 CREATE TABLE IF NOT EXISTS public.hydra_client
 (
-    pk INTEGER NOT NULL DEFAULT nextval('hydra_client_pk_seq'::regclass),
+    pk SERIAL PRIMARY KEY,
     id VARCHAR(255) NOT NULL,
     client_name TEXT NOT NULL,
     client_secret TEXT NOT NULL,
@@ -35,11 +35,7 @@ CREATE TABLE IF NOT EXISTS public.hydra_client
     metadata TEXT NOT NULL,
     token_endpoint_auth_signing_alg VARCHAR(10) NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT hydra_client_pkey PRIMARY KEY (pk)
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
-CREATE UNIQUE INDEX hydra_client_idx_id_uq
-    ON public.hydra_client USING btree (id ASC NULLS LAST);
 
 -- !DOWN

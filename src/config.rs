@@ -1,8 +1,10 @@
+#![allow(dead_code)]
+
+use crate::errors::{ServiceError, ServiceResult};
 use serde::{Deserialize, Serialize};
-use url::Url;
 use std::fs::File;
 use std::sync::Arc;
-use crate::errors::{ServiceResult, ServiceError};
+use url::Url;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Config {
@@ -19,11 +21,10 @@ pub(crate) struct Config {
 
 impl Config {
     pub(crate) fn parse_config(config_path: &String) -> ServiceResult<Arc<Config>> {
-        let config_file =
-            File::open(config_path).map_err(|e| ServiceError::Io(e.to_string()))?;
+        let config_file = File::open(config_path).map_err(ServiceError::Io)?;
         let config = serde_yaml::from_reader(config_file)
             .map(|u| Arc::new(u))
-            .map_err(|e| ServiceError::Parser(e.to_string()));
+            .map_err(ServiceError::YamlParser);
 
         config
     }

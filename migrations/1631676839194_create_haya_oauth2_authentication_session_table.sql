@@ -12,4 +12,5 @@ CREATE TABLE IF NOT EXISTS public.hydra_oauth2_authentication_session
 CREATE INDEX hydra_oauth2_authentication_session_sub_idx
     ON public.hydra_oauth2_authentication_session USING btree
     (subject ASC NULLS LAST);
+
 -- !DOWN
