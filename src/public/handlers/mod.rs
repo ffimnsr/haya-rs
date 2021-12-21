@@ -10,7 +10,9 @@ use url::Url;
 pub(crate) use authorize::handler_authorize;
 pub(crate) use token::handler_token;
 
-pub(crate) async fn handler_index(_req: Request<Body>) -> ApiResult<Response<Body>> {
+pub(crate) async fn handler_index(req: Request<Body>) -> ApiResult<Response<Body>> {
+    log::info!("index reqs {:?}", req);
+
     let data = serde_json::json!({
         "success": true,
         "message": "How long is forever?",

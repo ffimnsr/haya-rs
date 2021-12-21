@@ -1,7 +1,7 @@
 use crate::defaults::{ACCESS_TOKEN_LIFETIME, REFRESH_TOKEN_LIFETIME};
 use crate::errors::api_error::OauthError;
 use crate::errors::{ApiError, ApiResult};
-use crate::models::{AuthorizationCodeClaims, Client, StandardTokenClaims};
+use crate::models::{AuthorizationCodeClaims, Client, StandardTokenClaims, OauthAuthorizationCode};
 use crate::db::Pool;
 use crate::{HeaderValues, MimeValues};
 use chrono::{DateTime, Duration, NaiveDateTime, Utc};
@@ -11,7 +11,7 @@ use routerify::prelude::*;
 use std::collections::HashMap;
 use std::ops::{Add, Sub};
 use uuid::Uuid;
-use sha2::Sha256;
+use sha2::{Sha256, Digest};
 
 /// The OAuth 2.0 Token Endpoint
 ///
@@ -148,8 +148,26 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
                 "Missing body parameters 'code_verifier'",
             ))?;
 
-        // TODO: verify first pkce before proceeding
-        // TODO: revoke authorization code using the active bool column
+        log::info!("{:?}", claims.jwt_id);
+
+        let stored_auth_code = OauthAuthorizationCode::get_authorization_code(&pool, &claims.jwt_id)
+            .await
+            .map_err(ApiError::Other)?;
+
+        let mut hasher = Sha256::new();
+        hasher.update(code_verifier.as_bytes());
+        let hash = format!("{:x}", hasher.finalize());
+        let generate_code_challenge = base64::encode(hash.as_bytes());
+
+        if generate_code_challenge.ne(&stored_auth_code.code_challenge) {
+            return ApiError::bad_request_err(
+                "The provided 'code_verifier' does not equate to the stored 'code_challenge'",
+            );
+        }
+
+        OauthAuthorizationCode::revoke_authorization_code(&pool, &claims.jwt_id)
+            .await
+            .map_err(ApiError::Other)?;
 
         let current_time = Utc::now();
         let access_token_expiration_time =
@@ -180,6 +198,8 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
                 .build_token()
         })?;
 
+        // TODO: save access token
+
         let refresh_token_expiration_time =
             current_time.add(Duration::seconds(REFRESH_TOKEN_LIFETIME));
         let refresh_token_not_before =
@@ -208,6 +228,8 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
                 .state(state.as_str())
                 .build_token()
         })?;
+
+        // TODO: save refresh token
 
         let data = serde_json::json!({
             "token_type": "Bearer",

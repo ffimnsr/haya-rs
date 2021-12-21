@@ -6,17 +6,17 @@ use super::Parameter;
 
 #[derive(Debug, ToSql)]
 pub(crate) struct OauthAuthorizationCode {
-    jwt_id: Uuid,
-    client_id: Uuid,
-    request_id: Uuid,
-    requested_scope: String,
-    granted_scope: String,
-    requested_audience: String,
-    granted_audience: String,
-    code_challenge: String,
-    code_challenge_method: String,
-    redirect_uri: String,
-    requested_at: DateTime<Utc>,
+    pub jwt_id: Uuid,
+    pub client_id: Uuid,
+    pub request_id: Uuid,
+    pub requested_scope: String,
+    pub granted_scope: String,
+    pub requested_audience: String,
+    pub granted_audience: String,
+    pub code_challenge: String,
+    pub code_challenge_method: String,
+    pub redirect_uri: String,
+    pub requested_at: DateTime<Utc>,
 }
 
 impl<'a> OauthAuthorizationCode {
@@ -83,6 +83,48 @@ impl<'a> OauthAuthorizationCode {
             .await
             .map_err(|e| e.to_string())?;
 
+        Ok(())
+    }
+
+    pub async fn get_authorization_code(pool: &Pool, jwt_id: &Uuid) -> GenericResult<Self> {
+        let db = pool.get().await.map_err(|e| e.to_string())?;
+
+        let query = String::from(
+            "SELECT jwt_id, client_id, request_id, requested_scope, \
+                granted_scope, requested_audience, granted_audience, \
+                code_challenge, code_challenge_method, redirect_uri, \
+                requested_at \
+            FROM oauth_authorization_code \
+            WHERE active = true AND jwt_id = $1"
+        );
+
+        let row = db.query_one(&query, &[&jwt_id])
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let tmp = Self {
+            jwt_id: row.get("jwt_id"),
+            client_id: row.get("client_id"),
+            request_id: row.get("request_id"),
+            requested_scope: row.get("requested_scope"),
+            granted_scope: row.get("granted_scope"),
+            requested_audience: row.get("requested_audience"),
+            granted_audience: row.get("granted_audience"),
+            code_challenge: row.get("code_challenge"),
+            code_challenge_method: row.get("code_challenge_method"),
+            redirect_uri: row.get("redirect_uri"),
+            requested_at: row.get("requested_at"),
+        };
+
+        Ok(tmp)
+    }
+
+    pub async fn revoke_authorization_code(pool: &Pool, jwt_id: &Uuid) -> GenericResult<()> {
+        let db = pool.get().await.map_err(|e| e.to_string())?;
+        let query = String::from("UPDATE public.oauth_authorization_code SET active = false WHERE jwt_id = $1");
+        db.execute(&query, &[&jwt_id])
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 }
