@@ -4,7 +4,6 @@ pub mod api_error;
 pub mod service_error;
 
 pub(crate) use api_error::{ApiError, ApiResult};
-pub(crate) use deadpool_postgres::PoolError;
 pub(crate) use hyper::header::ToStrError as HeaderToStrError;
 pub(crate) use hyper::http::Error as HttpError;
 pub(crate) use hyper::Error as HyperError;

@@ -106,6 +106,8 @@ pub(crate) async fn error_handler(err: routerify::RouteError) -> Response<Body> 
                 .unwrap()
         }
         _ => {
+            log::error!("Error trace {:?}", svc_err);
+
             let data = serde_json::json!({
                 "success": false,
                 "message": svc_err.to_string(),

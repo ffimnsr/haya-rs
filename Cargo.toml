@@ -41,3 +41,4 @@ tinytemplate = "1.2"
 cookie = "= 0.12"
 rand = { version = "0.8", features = ["min_const_gen"] }
 sha-1 = "0.10.0"
+sha2 = "0.10.0"

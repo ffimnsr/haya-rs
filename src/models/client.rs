@@ -1,5 +1,5 @@
+use crate::db::Pool;
 use chrono::{DateTime, Utc};
-use deadpool_postgres::Pool;
 use uuid::Uuid;
 
 #[allow(dead_code)]

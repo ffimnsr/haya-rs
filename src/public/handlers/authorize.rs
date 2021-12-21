@@ -1,110 +1,27 @@
 use crate::errors::api_error::OauthError;
-use crate::errors::{ApiError, ApiResult, GenericResult};
-use crate::models::{AuthorizationCodeClaims, Client};
+use crate::errors::{ApiError, ApiResult};
+use crate::models::{AuthorizationCodeClaims, Client, OauthAuthorizationCode};
+use crate::db::Pool;
 use crate::{defaults::AUTHORIZATION_CODE_LIFETIME, HeaderValues};
-use chrono::{DateTime, Duration, Utc};
-use deadpool_postgres::Pool;
+use chrono::{Duration, Utc};
 use hyper::{Body, Request, Response, StatusCode};
-use jsonwebtoken::{encode, EncodingKey, Header};
+use jsonwebtoken::{EncodingKey, Header};
 use routerify::prelude::*;
 use std::collections::HashMap;
 use std::ops::{Add, Sub};
-use tokio_postgres::types::ToSql;
 use url::Url;
 use uuid::Uuid;
 
-#[derive(Debug, ToSql)]
-struct Access {
-    jwt_id: Uuid,
-    client_id: Uuid,
-    request_id: Uuid,
-    requested_scope: String,
-    granted_scope: String,
-    requested_audience: String,
-    granted_audience: String,
-    code_challenge: String,
-    code_challenge_method: String,
-    redirect_uri: String,
-    requested_at: DateTime<Utc>,
-}
-
-type Parameter<'a> = &'a (dyn ToSql + Sync);
-
-impl<'a> Access {
-    pub fn parameters(&'a self) -> Vec<Parameter<'a>> {
-        let params: Vec<Parameter<'a>> = vec![
-            &self.jwt_id,
-            &self.client_id,
-            &self.request_id,
-            &self.requested_scope,
-            &self.granted_scope,
-            &self.requested_audience,
-            &self.granted_audience,
-            &self.code_challenge,
-            &self.code_challenge_method,
-            &self.redirect_uri,
-            &self.requested_at,
-        ];
-
-        params
-    }
-}
-
-async fn save_access(
-    pool: Pool,
-    jwt_id: Uuid,
-    client_id: Uuid,
-    request_id: Uuid,
-    requested_scope: &str,
-    granted_scope: &str,
-    requested_audience: &str,
-    granted_audience: &str,
-    code_challenge: &str,
-    code_challenge_method: &str,
-    redirect_uri: &str,
-    requested_at: DateTime<Utc>,
-) -> GenericResult<()> {
-    let db = pool.get().await.map_err(|e| e.to_string())?;
-
-    let query = String::from(
-        "INSERT INTO access \
-            (jwt_id, client_id, request_id, requested_scope, \
-                granted_scope, requested_audience, granted_audience, \
-                code_challenge, code_challenge_method, redirect_uri, \
-                requested_at) \
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
-        RETURNING jwt_id",
-    );
-
-    let access = Access {
-        jwt_id,
-        client_id,
-        request_id,
-        requested_scope: requested_scope.to_string(),
-        granted_scope: granted_scope.to_string(),
-        requested_audience: requested_audience.to_string(),
-        granted_audience: granted_audience.to_string(),
-        code_challenge: code_challenge.to_string(),
-        code_challenge_method: code_challenge_method.to_string(),
-        redirect_uri: redirect_uri.to_string(),
-        requested_at,
-    };
-
-    db.query_one(&query, &access.parameters())
-        .await
-        .map_err(|e| e.to_string())?;
-
-    Ok(())
-}
-
 /// The OAuth 2.0 Authorize Endpoint
 ///
-/// This endpoint is not documented here because you should never use your own
-/// implementation to perform OAuth2 flows. OAuth2 is a very popular protocol
-/// and a library for your programming language will exists.
+/// The authorization endpoint is used to interact with the resource owner and
+/// obtain an authorization grant. The authorization server MUST first verify
+/// the identity of the resource owner. The way in which the authorization
+/// server authenticates the resource owner (e.g., username and password login,
+/// session cookies) is beyond the scope of this specification.
 ///
-/// To learn more about this flow please refer to the specification:
-/// https://tools.ietf.org/html/rfc6749
+/// To learn more about this, please refer to the specification:
+/// https://datatracker.ietf.org/doc/html/rfc6749#section-3.1
 pub(crate) async fn handler_authorize(req: Request<Body>) -> ApiResult<Response<Body>> {
     let pool = req
         .data::<Pool>()
@@ -287,7 +204,7 @@ pub(crate) async fn handler_authorize(req: Request<Body>) -> ApiResult<Response<
         redirect_uri: redirect_uri.clone(),
     };
 
-    let authorization_code = encode(
+    let authorization_code = jsonwebtoken::encode(
         &Header::default(),
         &claims,
         &EncodingKey::from_secret("secret".as_ref()),
@@ -301,8 +218,7 @@ pub(crate) async fn handler_authorize(req: Request<Body>) -> ApiResult<Response<
             .build()
     })?;
 
-    save_access(
-        pool.clone(),
+    let auth_db = OauthAuthorizationCode::new(
         jwt_id,
         client_id,
         request_id,
@@ -314,9 +230,11 @@ pub(crate) async fn handler_authorize(req: Request<Body>) -> ApiResult<Response<
         &code_challenge_method,
         &redirect_uri,
         current_time,
-    )
-    .await
-    .map_err(ApiError::Other)?;
+    );
+
+    auth_db.save_authorization_code(&pool)
+        .await
+        .map_err(ApiError::Other)?;
 
     let mut url = Url::parse(redirect_uri.as_str()).map_err(ApiError::Url)?;
     url.query_pairs_mut()

@@ -33,4 +33,8 @@ pub(crate) struct StandardTokenClaims {
     /// Scope is a JSON string containing a space-separated list of scopes
     /// associated with this token.
     pub scope: String,
+
+    /// Scope is a JSON string containing a space-separated list of scopes
+    /// associated with this token.
+    pub token_type: String,
 }
