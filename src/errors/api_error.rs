@@ -1,6 +1,6 @@
 use super::{
-    GenericError, HeaderToStrError, HttpError, HyperError, JwtError,
-    StringFromUtf8Error, UrlParseError,
+    GenericError, HeaderToStrError, HttpError, HyperError, JsonError,
+    JwtError, StringFromUtf8Error, UrlParseError,
 };
 use std::{error, fmt};
 
@@ -124,6 +124,7 @@ pub(crate) enum ApiError {
     Token(OauthError),
     StringFromUtf8(StringFromUtf8Error),
     HeaderToStr(HeaderToStrError),
+    Json(JsonError),
     BadRequest(String),
     Fatal(String),
     Other(GenericError),
@@ -158,6 +159,7 @@ impl fmt::Display for ApiError {
                 write!(f, "String from utf8 error: {:?}", err)
             }
             Self::HeaderToStr(ref err) => write!(f, "Header to string error: {:?}", err),
+            Self::Json(ref err) => write!(f, "Json error: {:?}", err),
             Self::BadRequest(ref cause) => write!(f, "Bad request error: {}", cause),
             Self::Fatal(ref cause) => write!(f, "Fatal error: {}", cause),
             Self::Other(ref err) => write!(f, "Other error: {:?}", err),

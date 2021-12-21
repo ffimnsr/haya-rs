@@ -6,8 +6,8 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use super::handlers::{
-    error_handler, handler_authorize, handler_index, handler_not_found, handler_test_cb,
-    handler_token,
+    error_handler, handler_authorize, handler_index, handler_not_found,
+    handler_metadata, handler_token,
 };
 use crate::config::Config;
 use crate::db::Pool;
@@ -60,17 +60,11 @@ pub(crate) fn router(
         .middleware(Middleware::post_with_info(logger))
         .get("/", handler_index)
         .get("/.well-known/jwks.json", handler_index)
-        .get("/.well-known/oauth-authorization-server", handler_index)
-        .get("/.well-known/openid-configuration", handler_index)
-        .get("/.well-known/webfinger", handler_index)
+        .get("/.well-known/oauth-authorization-server", handler_metadata)
         .get("/oauth/authorize", handler_authorize)
         .post("/oauth/token", handler_token)
-        .get("/oauth/auth_test", handler_authorize)
-        .get("/oauth/test_cb", handler_test_cb)
-        .get("/oauth/sessions/logout", handler_index)
         .get("/oauth/revoke", handler_index)
         .get("/oauth/token/introspect", handler_index)
-        .get("/userinfo", handler_index)
         .get("/health/alive", handler_index)
         .get("/health/ready", handler_index)
         .any(handler_not_found)

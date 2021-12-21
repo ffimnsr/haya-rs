@@ -1,11 +1,12 @@
+use crate::defaults::{AUTHORIZATION_CODE_LIFETIME, SHARED_ENCODING_KEY};
 use crate::errors::api_error::OauthError;
 use crate::errors::{ApiError, ApiResult};
 use crate::models::{AuthorizationCodeClaims, Client, OauthAuthorizationCode};
 use crate::db::Pool;
-use crate::{defaults::AUTHORIZATION_CODE_LIFETIME, HeaderValues};
+use crate::HeaderValues;
 use chrono::{Duration, Utc};
 use hyper::{Body, Request, Response, StatusCode};
-use jsonwebtoken::{EncodingKey, Header};
+use jsonwebtoken::{Header, Algorithm};
 use routerify::prelude::*;
 use std::collections::HashMap;
 use std::ops::{Add, Sub};
@@ -204,10 +205,12 @@ pub(crate) async fn handler_authorize(req: Request<Body>) -> ApiResult<Response<
         redirect_uri: redirect_uri.clone(),
     };
 
+    let priv_encode_key = SHARED_ENCODING_KEY.as_ref().map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
     let authorization_code = jsonwebtoken::encode(
-        &Header::default(),
+        &Header::new(Algorithm::RS256),
         &claims,
-        &EncodingKey::from_secret("secret".as_ref()),
+        &priv_encode_key,
     )
     .map_err(|_| {
         OauthError::new()

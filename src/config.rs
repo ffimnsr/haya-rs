@@ -24,7 +24,7 @@ impl Config {
         let config_file = File::open(config_path).map_err(ServiceError::Io)?;
         let config = serde_yaml::from_reader(config_file)
             .map(|u| Arc::new(u))
-            .map_err(ServiceError::YamlParser);
+            .map_err(ServiceError::Yaml);
 
         config
     }

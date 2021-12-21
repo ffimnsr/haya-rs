@@ -1,6 +1,6 @@
 use super::{
     AddrParseError, GenericError, HttpError, HyperError, IoError, PgError, VarError,
-    YamlParseError,
+    YamlError,
 };
 use std::{error, fmt};
 
@@ -16,7 +16,7 @@ pub(crate) enum ServiceError {
     Io(IoError),
     Router(GenericError),
     Var(VarError),
-    YamlParser(YamlParseError),
+    Yaml(YamlError),
 }
 
 impl error::Error for ServiceError {}
@@ -31,7 +31,7 @@ impl fmt::Display for ServiceError {
             Self::Io(ref err) => write!(f, "Io error: {}", err),
             Self::Router(ref err) => write!(f, "Router error: {}", err),
             Self::Var(ref err) => write!(f, "Var env error: {}", err),
-            Self::YamlParser(ref err) => write!(f, "Yaml parser error: {}", err),
+            Self::Yaml(ref err) => write!(f, "Yaml error: {}", err),
         }
     }
 }

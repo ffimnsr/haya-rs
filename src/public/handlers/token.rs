@@ -1,4 +1,4 @@
-use crate::defaults::{ACCESS_TOKEN_LIFETIME, REFRESH_TOKEN_LIFETIME};
+use crate::defaults::{ACCESS_TOKEN_LIFETIME, REFRESH_TOKEN_LIFETIME, SHARED_ENCODING_KEY, SHARED_DECODING_KEY};
 use crate::errors::api_error::OauthError;
 use crate::errors::{ApiError, ApiResult};
 use crate::models::{AuthorizationCodeClaims, Client, StandardTokenClaims, OauthAuthorizationCode};
@@ -6,7 +6,7 @@ use crate::db::Pool;
 use crate::{HeaderValues, MimeValues};
 use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use hyper::{Body, Request, Response, StatusCode};
-use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{Algorithm, Header, Validation};
 use routerify::prelude::*;
 use std::collections::HashMap;
 use std::ops::{Add, Sub};
@@ -92,6 +92,9 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
         );
     }
 
+    let priv_encode_key = SHARED_ENCODING_KEY.as_ref().map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let priv_decode_key = SHARED_DECODING_KEY.as_ref().map_err(|e| ApiError::BadRequest(e.to_string()))?;
+
     if grant_type == "authorization_code" {
         let code = params
             .get("code")
@@ -112,8 +115,8 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
 
         let claims = jsonwebtoken::decode::<AuthorizationCodeClaims>(
             &code,
-            &DecodingKey::from_secret("secret".as_ref()),
-            &Validation::new(Algorithm::HS256),
+            &priv_decode_key,
+            &Validation::new(Algorithm::RS256),
         )
         .map_err(ApiError::Jwt)?
         .claims;
@@ -148,21 +151,23 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
                 "Missing body parameters 'code_verifier'",
             ))?;
 
-        log::info!("{:?}", claims.jwt_id);
-
         let stored_auth_code = OauthAuthorizationCode::get_authorization_code(&pool, &claims.jwt_id)
             .await
             .map_err(ApiError::Other)?;
 
-        let mut hasher = Sha256::new();
-        hasher.update(code_verifier.as_bytes());
-        let hash = format!("{:x}", hasher.finalize());
-        let generate_code_challenge = base64::encode(hash.as_bytes());
+        if stored_auth_code.code_challenge_method.eq("S256") {
+            let mut hasher = Sha256::new();
+            hasher.update(code_verifier.as_bytes());
+            let generate_code_challenge = base64::encode(hasher.finalize())
+                .replace("+", "-")
+                .replace("/", "_")
+                .replace("=", "");
 
-        if generate_code_challenge.ne(&stored_auth_code.code_challenge) {
-            return ApiError::bad_request_err(
-                "The provided 'code_verifier' does not equate to the stored 'code_challenge'",
-            );
+            if generate_code_challenge.ne(&stored_auth_code.code_challenge) {
+                return ApiError::bad_request_err(
+                    "The provided 'code_verifier' does not equate to the stored 'code_challenge'",
+                );
+            }
         }
 
         OauthAuthorizationCode::revoke_authorization_code(&pool, &claims.jwt_id)
@@ -186,9 +191,9 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
         };
 
         let access_token = jsonwebtoken::encode(
-            &Header::default(),
+            &Header::new(Algorithm::RS256),
             &access_token_claims,
-            &EncodingKey::from_secret("secret".as_ref()),
+            &priv_encode_key,
         )
         .map_err(|_| {
             OauthError::new()
@@ -217,9 +222,9 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
         };
 
         let refresh_token = jsonwebtoken::encode(
-            &Header::default(),
+            &Header::new(Algorithm::RS256),
             &refresh_token_claims,
-            &EncodingKey::from_secret("secret".as_ref()),
+            &priv_encode_key,
         )
         .map_err(|_| {
             OauthError::new()
@@ -259,8 +264,8 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
 
         let claims = jsonwebtoken::decode::<StandardTokenClaims>(
             &refresh_token,
-            &DecodingKey::from_secret("secret".as_ref()),
-            &Validation::new(Algorithm::HS256),
+            &priv_decode_key,
+            &Validation::new(Algorithm::RS256),
         )
         .map_err(ApiError::Jwt)?
         .claims;
@@ -308,9 +313,9 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
         };
 
         let access_token = jsonwebtoken::encode(
-            &Header::default(),
+            &Header::new(Algorithm::RS256),
             &access_token_claims,
-            &EncodingKey::from_secret("secret".as_ref()),
+            &priv_encode_key,
         )
         .map_err(|_| {
             OauthError::new()
@@ -336,9 +341,9 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
         };
 
         let refresh_token = jsonwebtoken::encode(
-            &Header::default(),
+            &Header::new(Algorithm::RS256),
             &refresh_token_claims,
-            &EncodingKey::from_secret("secret".as_ref()),
+            &priv_encode_key,
         )
         .map_err(|_| {
             OauthError::new()

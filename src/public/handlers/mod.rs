@@ -1,5 +1,6 @@
 mod authenticate;
 mod authorize;
+mod metadata;
 mod token;
 
 use crate::errors::{ApiError, ApiResult, ServiceError};
@@ -8,24 +9,10 @@ use hyper::{Body, Method, Request, Response, StatusCode};
 use url::Url;
 
 pub(crate) use authorize::handler_authorize;
+pub(crate) use metadata::handler_metadata;
 pub(crate) use token::handler_token;
 
-pub(crate) async fn handler_index(req: Request<Body>) -> ApiResult<Response<Body>> {
-    log::info!("index reqs {:?}", req);
-
-    let data = serde_json::json!({
-        "success": true,
-        "message": "How long is forever?",
-    });
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(HeaderValues::CONTENT_TYPE, MimeValues::JSON_MIME_TYPE)
-        .body(Body::from(data.to_string()))
-        .map_err(ApiError::Http)
-}
-
-pub(crate) async fn handler_test_cb(_req: Request<Body>) -> ApiResult<Response<Body>> {
+pub(crate) async fn handler_index(_: Request<Body>) -> ApiResult<Response<Body>> {
     let data = serde_json::json!({
         "success": true,
         "message": "How long is forever?",
