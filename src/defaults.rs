@@ -5,10 +5,10 @@ pub(crate) const REFRESH_TOKEN_LIFETIME: i64 = 1_209_600;
 
 lazy_static::lazy_static! {
     pub static ref SHARED_ENCODING_KEY: Result<jsonwebtoken::EncodingKey, jsonwebtoken::errors::Error> = {
-        jsonwebtoken::EncodingKey::from_rsa_pem(include_bytes!("../certs/priv-key.pem"))
+        jsonwebtoken::EncodingKey::from_ec_pem(include_bytes!("../certs/priv-key.pem"))
     };
 
     pub static ref SHARED_DECODING_KEY: Result<jsonwebtoken::DecodingKey<'static>, jsonwebtoken::errors::Error> = {
-        jsonwebtoken::DecodingKey::from_rsa_pem(include_bytes!("../certs/pub.pem"))
+        jsonwebtoken::DecodingKey::from_ec_pem(include_bytes!("../certs/pub.pem"))
     };
 }

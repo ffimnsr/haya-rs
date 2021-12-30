@@ -9,6 +9,7 @@ pub(crate) struct OauthAuthorizationCode {
     pub jwt_id: Uuid,
     pub client_id: Uuid,
     pub request_id: Uuid,
+    pub subject: Uuid,
     pub requested_scope: String,
     pub granted_scope: String,
     pub requested_audience: String,
@@ -25,6 +26,7 @@ impl<'a> OauthAuthorizationCode {
             &self.jwt_id,
             &self.client_id,
             &self.request_id,
+            &self.subject,
             &self.requested_scope,
             &self.granted_scope,
             &self.requested_audience,
@@ -42,6 +44,7 @@ impl<'a> OauthAuthorizationCode {
         jwt_id: Uuid,
         client_id: Uuid,
         request_id: Uuid,
+        subject: Uuid,
         requested_scope: &str,
         granted_scope: &str,
         requested_audience: &str,
@@ -55,6 +58,7 @@ impl<'a> OauthAuthorizationCode {
             jwt_id,
             client_id,
             request_id,
+            subject,
             requested_scope: requested_scope.to_string(),
             granted_scope: granted_scope.to_string(),
             requested_audience: requested_audience.to_string(),
@@ -71,11 +75,11 @@ impl<'a> OauthAuthorizationCode {
 
         let query = String::from(
             "INSERT INTO oauth_authorization_code \
-                (jwt_id, client_id, request_id, requested_scope, \
+                (jwt_id, client_id, request_id, subject, requested_scope, \
                     granted_scope, requested_audience, granted_audience, \
                     code_challenge, code_challenge_method, redirect_uri, \
                     requested_at) \
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
             RETURNING jwt_id",
         );
 
@@ -90,7 +94,8 @@ impl<'a> OauthAuthorizationCode {
         let db = pool.get().await.map_err(|e| e.to_string())?;
 
         let query = String::from(
-            "SELECT jwt_id, client_id, request_id, requested_scope, \
+            "SELECT
+                jwt_id, client_id, request_id, subject, requested_scope, \
                 granted_scope, requested_audience, granted_audience, \
                 code_challenge, code_challenge_method, redirect_uri, \
                 requested_at \
@@ -106,6 +111,7 @@ impl<'a> OauthAuthorizationCode {
             jwt_id: row.get("jwt_id"),
             client_id: row.get("client_id"),
             request_id: row.get("request_id"),
+            subject: row.get("subject"),
             requested_scope: row.get("requested_scope"),
             granted_scope: row.get("granted_scope"),
             requested_audience: row.get("requested_audience"),

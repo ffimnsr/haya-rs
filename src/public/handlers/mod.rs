@@ -1,7 +1,12 @@
 mod authenticate;
 mod authorize;
+mod health;
+mod introspect;
+mod jwks;
 mod metadata;
+mod revoke;
 mod token;
+mod trace;
 
 use crate::errors::{ApiError, ApiResult, ServiceError};
 use crate::{HeaderValues, MimeValues};
@@ -9,8 +14,13 @@ use hyper::{Body, Method, Request, Response, StatusCode};
 use url::Url;
 
 pub(crate) use authorize::handler_authorize;
+pub(crate) use health::*;
+pub(crate) use introspect::handler_introspect;
+pub(crate) use jwks::handler_jwks;
 pub(crate) use metadata::handler_metadata;
+pub(crate) use revoke::handler_revoke;
 pub(crate) use token::handler_token;
+pub(crate) use trace::handler_trace;
 
 pub(crate) async fn handler_index(_: Request<Body>) -> ApiResult<Response<Body>> {
     let data = serde_json::json!({

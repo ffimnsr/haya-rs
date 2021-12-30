@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS public.oauth_authorization_code
     jwt_id uuid NOT NULL,
     client_id uuid NOT NULL,
     request_id uuid NOT NULL,
+	subject uuid NOT NULL,
     requested_scope text COLLATE pg_catalog."default" NOT NULL,
     granted_scope text COLLATE pg_catalog."default" NOT NULL,
     active boolean NOT NULL DEFAULT true,
@@ -14,8 +15,8 @@ CREATE TABLE IF NOT EXISTS public.oauth_authorization_code
     code_challenge_method character varying(5) COLLATE pg_catalog."default" NOT NULL,
     redirect_uri text COLLATE pg_catalog."default" NOT NULL,
     requested_at timestamp with time zone NOT NULL DEFAULT now(),
-    CONSTRAINT pk_access__jwt_id PRIMARY KEY (jwt_id),
-    CONSTRAINT fk_access__client_id FOREIGN KEY (client_id)
+    CONSTRAINT pk_oauth_authorization_code__jwt_id PRIMARY KEY (jwt_id),
+    CONSTRAINT fk_oauth_authorization_code__client_id FOREIGN KEY (client_id)
         REFERENCES public.client (id) MATCH SIMPLE
         ON UPDATE NO ACTION
         ON DELETE NO ACTION

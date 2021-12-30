@@ -72,8 +72,8 @@ pub(crate) struct OauthAuthorizationServerMetadata {
     /// JSON array containing a list of the JWS signing algorithms (alg values)
     /// supported by the Token Endpoint for the signature on the JWT used to
     /// authenticate the Client at the Token Endpoint for the private_key_jwt
-    /// and client_secret_jwt authentication methods. Servers SHOULD support
-    /// RS256. The value none MUST NOT be used.
+    /// and client_secret_jwt authentication methods. The value none MUST NOT be
+    /// used.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token_endpoint_auth_signing_alg_values_supported: Option<Vec<String>>,
 

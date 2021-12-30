@@ -208,7 +208,7 @@ pub(crate) async fn handler_authorize(req: Request<Body>) -> ApiResult<Response<
     let priv_encode_key = SHARED_ENCODING_KEY.as_ref().map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
     let authorization_code = jsonwebtoken::encode(
-        &Header::new(Algorithm::RS256),
+        &Header::new(Algorithm::ES256),
         &claims,
         &priv_encode_key,
     )
@@ -225,6 +225,7 @@ pub(crate) async fn handler_authorize(req: Request<Body>) -> ApiResult<Response<
         jwt_id,
         client_id,
         request_id,
+        Uuid::new_v4(),
         &requested_scope,
         &requested_scope,
         "",

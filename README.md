@@ -13,6 +13,21 @@ Licensed under either of
 
 at your option.
 
+### Generating EC Private And Public Keys
+
+In order to generate EC private key:
+
+```bash
+openssl ecparam -genkey -noout -name prime256v1 |
+    openssl pkcs8 -topk8 -nocrypt -out ./certs/priv-key.pem
+```
+
+To generate the counterpart public key:
+
+```
+openssl ec -in key.pem -pubout -out ./certs/pub.pem
+```
+
 ### Contribution
 
 Unless you explicitly state otherwise, any contribution intentionally submitted

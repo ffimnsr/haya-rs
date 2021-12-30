@@ -17,6 +17,7 @@ pub(crate) use std::net::AddrParseError;
 pub(crate) use std::string::FromUtf8Error as StringFromUtf8Error;
 pub(crate) use tokio_postgres::Error as PgError;
 pub(crate) use url::ParseError as UrlParseError;
+pub(crate) use sys_info::Error as SysInfoError;
 
 pub(crate) type GenericError = Box<dyn std::error::Error + Send + Sync>;
 pub(crate) type GenericResult<T> = Result<T, GenericError>;

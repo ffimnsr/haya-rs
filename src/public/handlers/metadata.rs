@@ -30,7 +30,7 @@ pub(crate) async fn handler_metadata(_: Request<Body>) -> ApiResult<Response<Bod
             String::from("private_key_jwt"),
         ]),
         token_endpoint_auth_signing_alg_values_supported: Some(vec![
-            String::from("RS256"),
+            String::from("ES256"),
         ]),
         service_documentation: None,
         op_policy_uri: None,
@@ -43,14 +43,14 @@ pub(crate) async fn handler_metadata(_: Request<Body>) -> ApiResult<Response<Bod
             String::from("private_key_jwt"),
         ]),
         revocation_endpoint_auth_signing_alg_values_supported: Some(vec![
-            String::from("RS256"),
+            String::from("ES256"),
         ]),
         introspection_endpoint: Some(String::from("/oauth/token/introspect")),
         introspection_endpoint_auth_methods_supported: Some(vec![
             String::from("private_key_jwt"),
         ]),
         introspection_endpoint_auth_signing_alg_values_supported: Some(vec![
-            String::from("RS256"),
+            String::from("ES256"),
         ]),
         code_challenge_methods_supported: Some(vec![
             String::from("S256"),

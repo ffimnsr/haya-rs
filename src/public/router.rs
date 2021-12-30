@@ -7,7 +7,9 @@ use uuid::Uuid;
 
 use super::handlers::{
     error_handler, handler_authorize, handler_index, handler_not_found,
-    handler_metadata, handler_token,
+    handler_metadata, handler_token, handler_jwks, handler_trace,
+    handler_introspect, handler_revoke,
+    handler_health_live, handler_health_ready,
 };
 use crate::config::Config;
 use crate::db::Pool;
@@ -59,14 +61,15 @@ pub(crate) fn router(
         .middleware(Middleware::post_with_info(set_request_id_header))
         .middleware(Middleware::post_with_info(logger))
         .get("/", handler_index)
-        .get("/.well-known/jwks.json", handler_index)
+        .get("/trace", handler_trace)
+        .get("/.well-known/jwks.json", handler_jwks)
         .get("/.well-known/oauth-authorization-server", handler_metadata)
         .get("/oauth/authorize", handler_authorize)
         .post("/oauth/token", handler_token)
-        .get("/oauth/revoke", handler_index)
-        .get("/oauth/token/introspect", handler_index)
-        .get("/health/alive", handler_index)
-        .get("/health/ready", handler_index)
+        .get("/oauth/revoke", handler_revoke)
+        .get("/oauth/token/introspect", handler_introspect)
+        .get("/health/live", handler_health_live)
+        .get("/health/ready", handler_health_ready)
         .any(handler_not_found)
         .err_handler(error_handler)
         .build()

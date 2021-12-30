@@ -116,7 +116,7 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
         let claims = jsonwebtoken::decode::<AuthorizationCodeClaims>(
             &code,
             &priv_decode_key,
-            &Validation::new(Algorithm::RS256),
+            &Validation::new(Algorithm::ES256),
         )
         .map_err(ApiError::Jwt)?
         .claims;
@@ -191,7 +191,7 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
         };
 
         let access_token = jsonwebtoken::encode(
-            &Header::new(Algorithm::RS256),
+            &Header::new(Algorithm::ES256),
             &access_token_claims,
             &priv_encode_key,
         )
@@ -222,7 +222,7 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
         };
 
         let refresh_token = jsonwebtoken::encode(
-            &Header::new(Algorithm::RS256),
+            &Header::new(Algorithm::ES256),
             &refresh_token_claims,
             &priv_encode_key,
         )
@@ -265,7 +265,7 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
         let claims = jsonwebtoken::decode::<StandardTokenClaims>(
             &refresh_token,
             &priv_decode_key,
-            &Validation::new(Algorithm::RS256),
+            &Validation::new(Algorithm::ES256),
         )
         .map_err(ApiError::Jwt)?
         .claims;
@@ -313,7 +313,7 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
         };
 
         let access_token = jsonwebtoken::encode(
-            &Header::new(Algorithm::RS256),
+            &Header::new(Algorithm::ES256),
             &access_token_claims,
             &priv_encode_key,
         )
@@ -341,7 +341,7 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
         };
 
         let refresh_token = jsonwebtoken::encode(
-            &Header::new(Algorithm::RS256),
+            &Header::new(Algorithm::ES256),
             &refresh_token_claims,
             &priv_encode_key,
         )

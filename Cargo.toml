@@ -3,7 +3,7 @@ name = "haya"
 version = "0.1.1"
 authors = ["Edward Fitz Abucay <ffimnsr@pm.me>"]
 description = "An Oauth 2.0 server implemented in pure Rust"
-categories = ["authentication", "oauth2", "openid"]
+categories = ["authentication", "oauth2", "dpop`"]
 keywords = ["authentication", "oauth", "microservice", "provider", "cli"]
 license = "MIT OR Apache-2.0"
 homepage = "https://github.com/ffimnsr/haya-rs"
@@ -43,3 +43,4 @@ rand = { version = "0.8", features = ["min_const_gen"] }
 sha-1 = "0.10.0"
 sha2 = "0.10.0"
 lazy_static = "1.4.0"
+sys-info = "0.9"

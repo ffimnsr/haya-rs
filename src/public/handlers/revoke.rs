@@ -2,7 +2,7 @@ use crate::errors::{ApiError, ApiResult};
 use crate::{HeaderValues, MimeValues};
 use hyper::{Body, Request, Response, StatusCode};
 
-pub(crate) async fn handler_jwks(_: Request<Body>) -> ApiResult<Response<Body>> {
+pub(crate) async fn handler_revoke(_: Request<Body>) -> ApiResult<Response<Body>> {
     let data = serde_json::json!({
         "success": true,
         "message": "How long is forever?",
