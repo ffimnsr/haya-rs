@@ -5,7 +5,7 @@ use crate::models::{AuthorizationCodeClaims, Client, OauthAuthorizationCode};
 use crate::db::Pool;
 use crate::HeaderValues;
 use chrono::{Duration, Utc};
-use hyper::{Body, Request, Response, StatusCode};
+use hyper::{Body, Request, Response, StatusCode, Uri};
 use jsonwebtoken::{Header, Algorithm};
 use routerify::prelude::*;
 use std::collections::HashMap;
@@ -23,24 +23,16 @@ use uuid::Uuid;
 ///
 /// To learn more about this, please refer to the specification:
 /// https://datatracker.ietf.org/doc/html/rfc6749#section-3.1
-pub(crate) async fn handler_authorize(req: Request<Body>) -> ApiResult<Response<Body>> {
+pub(crate) async fn handler_authorize(mut req: Request<Body>) -> ApiResult<Response<Body>> {
     let pool = req
         .data::<Pool>()
-        .ok_or_else(ApiError::fatal("Unable to get database pool connection"))?;
+        .ok_or_else(ApiError::fatal("Unable to get database pool connection"))?
+        .clone();
 
-    let params: HashMap<String, String> = req
-        .uri()
-        .query()
-        .map(|v| {
-            url::form_urlencoded::parse(v.as_bytes())
-                .into_owned()
-                .collect()
-        })
-        .unwrap_or_else(HashMap::new);
+    let request_id = req.context::<Uuid>()
+        .ok_or_else(ApiError::fatal("Unable to get missing field `request_id`"))?;
 
-    if params.is_empty() {
-        return ApiError::bad_request_err::<_>("Url query parameters is empty");
-    }
+    let params = get_params(&mut req).await?;
 
     log::info!("authorize params {:?}", params);
 
@@ -177,15 +169,6 @@ pub(crate) async fn handler_authorize(req: Request<Body>) -> ApiResult<Response<
                 .build(),
         )?;
 
-    let request_id = req.context::<Uuid>().ok_or(
-        OauthError::new()
-            .uri(redirect_uri.as_str())
-            .invalid_request()
-            .description("Missing context 'request_id'")
-            .state(state.as_str())
-            .build(),
-    )?;
-
     let current_time = Utc::now();
     let issued_at_time = current_time.timestamp();
     let expiration_time = current_time
@@ -251,4 +234,32 @@ pub(crate) async fn handler_authorize(req: Request<Body>) -> ApiResult<Response<
         .header(HeaderValues::LOCATION, url.as_str())
         .body(Body::empty())
         .map_err(ApiError::Http)
+}
+
+async fn get_params(req: &mut Request<Body>) -> ApiResult<HashMap<String, String>> {
+    let params = get_url_query_params(req.uri());
+
+    if !params.is_none() {
+        return Ok(params.unwrap_or_else(HashMap::new));
+    }
+
+    let params = get_body_params(req).await;
+    Ok(params.unwrap_or_else(HashMap::new))
+}
+
+fn get_url_query_params(uri: &Uri) -> Option<HashMap<String, String>> {
+    uri
+        .query()
+        .map(|v| {
+            url::form_urlencoded::parse(v.as_bytes())
+                .into_owned()
+                .collect::<_>()
+        })
+}
+
+async fn get_body_params(req: &mut Request<Body>) -> Option<HashMap<String, String>> {
+    hyper::body::to_bytes(req.body_mut())
+        .await
+        .map(|v| url::form_urlencoded::parse(&v).into_owned().collect::<_>())
+        .ok()
 }

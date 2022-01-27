@@ -17,6 +17,8 @@ pub(crate) async fn serve(config: Arc<Config>, db: Pool) -> ServiceResult<()> {
 
     log::info!("Haya OP is now listening at {}", addr);
     Server::bind(&addr)
+        .http1_preserve_header_case(true)
+        .http1_title_case_headers(true)
         .serve(service)
         .await
         .map_err(ServiceError::Hyper)

@@ -1,7 +1,7 @@
 use crate::defaults::{ACCESS_TOKEN_LIFETIME, REFRESH_TOKEN_LIFETIME, SHARED_ENCODING_KEY, SHARED_DECODING_KEY};
 use crate::errors::api_error::OauthError;
 use crate::errors::{ApiError, ApiResult};
-use crate::models::{AuthorizationCodeClaims, Client, StandardTokenClaims, OauthAuthorizationCode};
+use crate::models::{AuthorizationCodeClaims, Client, StandardTokenClaims, OauthAuthorizationCode, OauthAccessToken, OauthRefreshToken};
 use crate::db::Pool;
 use crate::{HeaderValues, MimeValues};
 use chrono::{DateTime, Duration, NaiveDateTime, Utc};
@@ -27,6 +27,13 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
         .data::<Pool>()
         .ok_or_else(ApiError::fatal("Unable to get database pool connection"))?
         .clone();
+
+    let request_id = req.context::<Uuid>().ok_or(
+        OauthError::new()
+            .invalid_request()
+            .description("Missing context 'request_id'")
+            .build(),
+    )?;
 
     let content_type = req
         .headers()
@@ -178,9 +185,10 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
         let access_token_expiration_time =
             current_time.add(Duration::seconds(ACCESS_TOKEN_LIFETIME));
         let access_token_not_before = current_time.sub(Duration::seconds(1));
+        let access_token_jwt_id = Uuid::new_v4();
 
         let access_token_claims = StandardTokenClaims {
-            jwt_id: Uuid::new_v4(),
+            jwt_id: access_token_jwt_id,
             subject: claims.subject,
             issued_at_time: current_time.timestamp(),
             expiration_time: access_token_expiration_time.timestamp(),
@@ -203,7 +211,17 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
                 .build_token()
         })?;
 
-        // TODO: save access token
+        let access_token_client  = OauthAccessToken::new(
+            access_token_jwt_id,
+            client_id,
+            request_id,
+            claims.subject,
+            claims.scope.clone().as_str(),
+            claims.audience.clone().to_string().as_str(),
+            current_time,
+        );
+
+        access_token_client.save_access_token(&pool).await.unwrap();
 
         let refresh_token_expiration_time =
             current_time.add(Duration::seconds(REFRESH_TOKEN_LIFETIME));
@@ -234,7 +252,17 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
                 .build_token()
         })?;
 
-        // TODO: save refresh token
+        let refresh_token_client  = OauthRefreshToken::new(
+            access_token_jwt_id,
+            client_id,
+            request_id,
+            claims.subject,
+            claims.scope.clone().as_str(),
+            claims.audience.clone().to_string().as_str(),
+            current_time,
+        );
+
+        refresh_token_client.save_refresh_token(&pool).await.unwrap();
 
         let data = serde_json::json!({
             "token_type": "Bearer",
@@ -294,7 +322,7 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
             );
         }
 
-        // TODO: revoke token if its only specified for one time use
+        OauthRefreshToken::revoke_refresh_token(&pool, &claims.jwt_id).await.unwrap();
 
         let current_time = Utc::now();
         let access_token_expiration_time =
