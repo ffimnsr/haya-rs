@@ -1,6 +1,6 @@
 use super::{
-    GenericError, HeaderToStrError, HttpError, HyperError, JsonError,
-    JwtError, StringFromUtf8Error, UrlParseError, SysInfoError,
+    GenericError, HeaderToStrError, HttpError, HyperError, JsonError, JwtError,
+    StringFromUtf8Error, SysInfoError, UrlParseError,
 };
 use std::{error, fmt};
 

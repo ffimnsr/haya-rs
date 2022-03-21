@@ -1,8 +1,8 @@
+use super::Parameter;
 use crate::{db::Pool, errors::GenericResult};
 use chrono::{DateTime, Utc};
 use postgres_types::ToSql;
 use uuid::Uuid;
-use super::Parameter;
 
 #[derive(Debug, ToSql)]
 pub(crate) struct OauthAuthorizationCode {
@@ -90,7 +90,10 @@ impl<'a> OauthAuthorizationCode {
         Ok(())
     }
 
-    pub async fn get_authorization_code(pool: &Pool, jwt_id: &Uuid) -> GenericResult<Self> {
+    pub async fn get_authorization_code(
+        pool: &Pool,
+        jwt_id: &Uuid,
+    ) -> GenericResult<Self> {
         let db = pool.get().await.map_err(|e| e.to_string())?;
 
         let query = String::from(
@@ -100,10 +103,11 @@ impl<'a> OauthAuthorizationCode {
                 code_challenge, code_challenge_method, redirect_uri, \
                 requested_at \
             FROM oauth_authorization_code \
-            WHERE active = true AND jwt_id = $1"
+            WHERE active = true AND jwt_id = $1",
         );
 
-        let row = db.query_one(&query, &[&jwt_id])
+        let row = db
+            .query_one(&query, &[&jwt_id])
             .await
             .map_err(|e| e.to_string())?;
 
@@ -125,7 +129,10 @@ impl<'a> OauthAuthorizationCode {
         Ok(tmp)
     }
 
-    pub async fn revoke_authorization_code(pool: &Pool, jwt_id: &Uuid) -> GenericResult<()> {
+    pub async fn revoke_authorization_code(
+        pool: &Pool,
+        jwt_id: &Uuid,
+    ) -> GenericResult<()> {
         let db = pool.get().await.map_err(|e| e.to_string())?;
         let query = String::from("UPDATE public.oauth_authorization_code SET active = false WHERE jwt_id = $1");
         db.execute(&query, &[&jwt_id])

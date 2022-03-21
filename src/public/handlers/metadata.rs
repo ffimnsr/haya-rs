@@ -1,7 +1,7 @@
-use hyper::{StatusCode, Response, Request, Body};
+use hyper::{Body, Request, Response, StatusCode};
 
+use crate::errors::{ApiError, ApiResult};
 use crate::models::OauthAuthorizationServerMetadata;
-use crate::errors::{ApiResult, ApiError};
 use crate::{HeaderValues, MimeValues};
 
 pub(crate) async fn handler_metadata(_: Request<Body>) -> ApiResult<Response<Body>> {
@@ -11,12 +11,8 @@ pub(crate) async fn handler_metadata(_: Request<Body>) -> ApiResult<Response<Bod
         token_endpoint: Some(String::from("/oauth/token")),
         jwks_uri: String::from("/.well-known/jwks.json"),
         registration_endpoint: None,
-        scopes_supported: Some(vec![
-            String::from("profile"),
-        ]),
-        response_types_supported: vec![
-            String::from("code"),
-        ],
+        scopes_supported: Some(vec![String::from("profile")]),
+        response_types_supported: vec![String::from("code")],
         response_modes_supported: Some(vec![
             String::from("query"),
             String::from("fragment"),
@@ -26,29 +22,27 @@ pub(crate) async fn handler_metadata(_: Request<Body>) -> ApiResult<Response<Bod
             String::from("authorization_code"),
             String::from("refresh_token"),
         ]),
-        token_endpoint_auth_methods_supported: Some(vec![
-            String::from("private_key_jwt"),
-        ]),
-        token_endpoint_auth_signing_alg_values_supported: Some(vec![
-            String::from("ES256"),
-        ]),
+        token_endpoint_auth_methods_supported: Some(vec![String::from(
+            "private_key_jwt",
+        )]),
+        token_endpoint_auth_signing_alg_values_supported: Some(vec![String::from(
+            "ES256",
+        )]),
         service_documentation: None,
         op_policy_uri: None,
         op_tos_uri: None,
-        ui_locales_supported: Some(vec![
-            String::from("en-US"),
-        ]),
+        ui_locales_supported: Some(vec![String::from("en-US")]),
         revocation_endpoint: Some(String::from("/oauth/revoke")),
-        revocation_endpoint_auth_methods_supported: Some(vec![
-            String::from("private_key_jwt"),
-        ]),
-        revocation_endpoint_auth_signing_alg_values_supported: Some(vec![
-            String::from("ES256"),
-        ]),
+        revocation_endpoint_auth_methods_supported: Some(vec![String::from(
+            "private_key_jwt",
+        )]),
+        revocation_endpoint_auth_signing_alg_values_supported: Some(vec![String::from(
+            "ES256",
+        )]),
         introspection_endpoint: Some(String::from("/oauth/token/introspect")),
-        introspection_endpoint_auth_methods_supported: Some(vec![
-            String::from("private_key_jwt"),
-        ]),
+        introspection_endpoint_auth_methods_supported: Some(vec![String::from(
+            "private_key_jwt",
+        )]),
         introspection_endpoint_auth_signing_alg_values_supported: Some(vec![
             String::from("ES256"),
         ]),
@@ -58,8 +52,7 @@ pub(crate) async fn handler_metadata(_: Request<Body>) -> ApiResult<Response<Bod
         ]),
     };
 
-    let json =
-        serde_json::to_string(&metadata).map_err(ApiError::Json)?;
+    let json = serde_json::to_string(&metadata).map_err(ApiError::Json)?;
 
     Response::builder()
         .status(StatusCode::OK)

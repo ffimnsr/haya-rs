@@ -1,5 +1,6 @@
 use std::time::Instant;
 
+use crate::db::Pool;
 /// Health Checklist:
 /// o Downstream Operation Status
 ///   - Your API may depend on other APIs to operate. Make sure to check the
@@ -15,9 +16,7 @@ use std::time::Instant;
 /// o In-flight messages
 ///   - Does your API works with message queues? Too many in-flight messages
 ///     can be a sign of an underlying issue.
-
 use crate::errors::{ApiError, ApiResult, GenericResult};
-use crate::db::Pool;
 use crate::{HeaderValues, MimeValues};
 use hyper::{Body, Request, Response, StatusCode};
 use routerify::prelude::*;
@@ -26,7 +25,9 @@ use sys_info::mem_info;
 /// The readiness endpoint, returns the readiness state to accept incoming
 /// requests from the gateway or the upstream proxy. Readiness signals that the
 /// app is running normally but isn’t ready to receive requests just yet.
-pub(crate) async fn handler_health_ready(req: Request<Body>) -> ApiResult<Response<Body>> {
+pub(crate) async fn handler_health_ready(
+    req: Request<Body>,
+) -> ApiResult<Response<Body>> {
     let db_elapsed = Instant::now();
     let db_status = if check_database(req).await.is_err() {
         "DOWN"
@@ -90,7 +91,8 @@ pub(crate) async fn handler_health_live(_: Request<Body>) -> ApiResult<Response<
 }
 
 async fn check_database(req: Request<Body>) -> GenericResult<()> {
-    let pool = req.data::<Pool>()
+    let pool = req
+        .data::<Pool>()
         .ok_or_else(ApiError::fatal("Unable to get database pool connection"))?;
 
     let db = pool.get().await.map_err(|e| e.to_string())?;

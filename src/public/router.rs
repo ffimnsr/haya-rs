@@ -6,10 +6,9 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use super::handlers::{
-    error_handler, handler_authorize, handler_index, handler_not_found,
-    handler_metadata, handler_token, handler_jwks, handler_trace,
-    handler_introspect, handler_revoke,
-    handler_health_live, handler_health_ready,
+    error_handler, handler_authorize, handler_health_live, handler_health_ready,
+    handler_index, handler_introspect, handler_jwks, handler_metadata,
+    handler_not_found, handler_revoke, handler_token, handler_trace,
 };
 use crate::config::Config;
 use crate::db::Pool;

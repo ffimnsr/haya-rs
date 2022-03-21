@@ -1,10 +1,10 @@
 #![allow(dead_code)]
 
+use super::Parameter;
 use crate::{db::Pool, errors::GenericResult};
 use chrono::{DateTime, Utc};
 use postgres_types::ToSql;
 use uuid::Uuid;
-use super::Parameter;
 
 #[derive(Debug, ToSql)]
 pub(crate) struct OauthAccessToken {
@@ -78,10 +78,11 @@ impl<'a> OauthAccessToken {
                 jwt_id, client_id, request_id, subject, scope, \
                 audience, requested_at \
             FROM oauth_access_token \
-            WHERE active = true AND jwt_id = $1"
+            WHERE active = true AND jwt_id = $1",
         );
 
-        let row = db.query_one(&query, &[&jwt_id])
+        let row = db
+            .query_one(&query, &[&jwt_id])
             .await
             .map_err(|e| e.to_string())?;
 
@@ -100,7 +101,9 @@ impl<'a> OauthAccessToken {
 
     pub async fn revoke_access_token(pool: &Pool, jwt_id: &Uuid) -> GenericResult<()> {
         let db = pool.get().await.map_err(|e| e.to_string())?;
-        let query = String::from("UPDATE public.oauth_access_token SET active = false WHERE jwt_id = $1");
+        let query = String::from(
+            "UPDATE public.oauth_access_token SET active = false WHERE jwt_id = $1",
+        );
         db.execute(&query, &[&jwt_id])
             .await
             .map_err(|e| e.to_string())?;

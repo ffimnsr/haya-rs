@@ -1,17 +1,23 @@
-use crate::defaults::{ACCESS_TOKEN_LIFETIME, REFRESH_TOKEN_LIFETIME, SHARED_ENCODING_KEY, SHARED_DECODING_KEY};
+use crate::db::Pool;
+use crate::defaults::{
+    ACCESS_TOKEN_LIFETIME, REFRESH_TOKEN_LIFETIME, SHARED_DECODING_KEY,
+    SHARED_ENCODING_KEY,
+};
 use crate::errors::api_error::OauthError;
 use crate::errors::{ApiError, ApiResult};
-use crate::models::{AuthorizationCodeClaims, Client, StandardTokenClaims, OauthAuthorizationCode, OauthAccessToken, OauthRefreshToken};
-use crate::db::Pool;
+use crate::models::{
+    AuthorizationCodeClaims, Client, OauthAccessToken, OauthAuthorizationCode,
+    OauthRefreshToken, StandardTokenClaims,
+};
 use crate::{HeaderValues, MimeValues};
 use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use hyper::{Body, Request, Response, StatusCode};
 use jsonwebtoken::{Algorithm, Header, Validation};
 use routerify::prelude::*;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::ops::{Add, Sub};
 use uuid::Uuid;
-use sha2::{Sha256, Digest};
 
 /// The OAuth 2.0 Token Endpoint
 ///
@@ -99,8 +105,12 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
         );
     }
 
-    let priv_encode_key = SHARED_ENCODING_KEY.as_ref().map_err(|e| ApiError::BadRequest(e.to_string()))?;
-    let priv_decode_key = SHARED_DECODING_KEY.as_ref().map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let priv_encode_key = SHARED_ENCODING_KEY
+        .as_ref()
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let priv_decode_key = SHARED_DECODING_KEY
+        .as_ref()
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
     if grant_type == "authorization_code" {
         let code = params
@@ -158,9 +168,10 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
                 "Missing body parameters 'code_verifier'",
             ))?;
 
-        let stored_auth_code = OauthAuthorizationCode::get_authorization_code(&pool, &claims.jwt_id)
-            .await
-            .map_err(ApiError::Other)?;
+        let stored_auth_code =
+            OauthAuthorizationCode::get_authorization_code(&pool, &claims.jwt_id)
+                .await
+                .map_err(ApiError::Other)?;
 
         if stored_auth_code.code_challenge_method.eq("S256") {
             let mut hasher = Sha256::new();
@@ -211,7 +222,7 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
                 .build_token()
         })?;
 
-        let access_token_client  = OauthAccessToken::new(
+        let access_token_client = OauthAccessToken::new(
             access_token_jwt_id,
             client_id,
             request_id,
@@ -252,7 +263,7 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
                 .build_token()
         })?;
 
-        let refresh_token_client  = OauthRefreshToken::new(
+        let refresh_token_client = OauthRefreshToken::new(
             access_token_jwt_id,
             client_id,
             request_id,
@@ -262,7 +273,10 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
             current_time,
         );
 
-        refresh_token_client.save_refresh_token(&pool).await.unwrap();
+        refresh_token_client
+            .save_refresh_token(&pool)
+            .await
+            .unwrap();
 
         let data = serde_json::json!({
             "token_type": "Bearer",
@@ -283,7 +297,9 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
         let refresh_token = params
             .get("refresh_token")
             .map(|c| c.to_owned())
-            .ok_or_else(ApiError::bad_request("Missing body parameters 'refresh_token'"))?;
+            .ok_or_else(ApiError::bad_request(
+                "Missing body parameters 'refresh_token'",
+            ))?;
 
         let scope = params
             .get("scope")
@@ -322,7 +338,9 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
             );
         }
 
-        OauthRefreshToken::revoke_refresh_token(&pool, &claims.jwt_id).await.unwrap();
+        OauthRefreshToken::revoke_refresh_token(&pool, &claims.jwt_id)
+            .await
+            .unwrap();
 
         let current_time = Utc::now();
         let access_token_expiration_time =
