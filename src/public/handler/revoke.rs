@@ -1,4 +1,4 @@
-use crate::errors::{ApiError, ApiResult};
+use crate::error::{ApiError, ApiResult};
 use crate::{HeaderValues, MimeValues};
 use hyper::{Body, Request, Response, StatusCode};
 

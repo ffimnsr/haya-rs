@@ -1,11 +1,11 @@
 use hyper::{Body, Request, Response, StatusCode};
 
-use crate::errors::{ApiError, ApiResult};
-use crate::models::OauthAuthorizationServerMetadata;
+use crate::error::{ApiError, ApiResult};
+use crate::model::OauthServerMetadata;
 use crate::{HeaderValues, MimeValues};
 
 pub(crate) async fn handler_metadata(_: Request<Body>) -> ApiResult<Response<Body>> {
-    let metadata = OauthAuthorizationServerMetadata {
+    let metadata = OauthServerMetadata {
         issuer: String::from("/"),
         authorization_endpoint: String::from("/oauth/authorize"),
         token_endpoint: Some(String::from("/oauth/token")),
@@ -52,7 +52,7 @@ pub(crate) async fn handler_metadata(_: Request<Body>) -> ApiResult<Response<Bod
         ]),
     };
 
-    let json = serde_json::to_string(&metadata).map_err(ApiError::Json)?;
+    let json = serde_json::to_string(&metadata).map_err(ApiError::SerdeJson)?;
 
     Response::builder()
         .status(StatusCode::OK)

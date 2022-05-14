@@ -1,19 +1,19 @@
-mod handlers;
+mod handler;
 mod router;
 
-use crate::config::Config;
-use crate::db::Pool;
-use crate::errors::{ServiceError, ServiceResult};
-use hyper::Server;
-use routerify::RouterService;
 use std::sync::Arc;
+use hyper::Server;
+use mongodb::Database;
+use routerify::RouterService;
 
-pub(crate) async fn serve(config: Arc<Config>, db: Pool) -> ServiceResult<()> {
-    let router = router::router(config, db)?;
+use crate::error::{ServiceError, ServiceResult};
+
+pub(crate) async fn serve(port: u16, db: Arc<Database>,) -> ServiceResult<()> {
+    let router = router::router(db)?;
 
     let service = RouterService::new(router).map_err(ServiceError::Router)?;
 
-    let addr = "[::]:4444".parse().map_err(ServiceError::AddrParser)?;
+    let addr = format!("[::]:{}", port).parse().map_err(ServiceError::AddrParser)?;
 
     log::info!("Haya OP is now listening at {}", addr);
     Server::bind(&addr)

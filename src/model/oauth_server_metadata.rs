@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 /// signature algorithms among others.
 /// https://tools.ietf.org/id/draft-ietf-oauth-discovery-08.html
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct OauthAuthorizationServerMetadata {
+pub(crate) struct OauthServerMetadata {
     /// URL using the https scheme with no query or fragment component that the
     /// OP asserts as its IssuerURL Identifier. If IssuerURL discovery is
     /// supported , this value MUST be identical to the issuer value returned by

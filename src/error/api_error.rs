@@ -1,5 +1,5 @@
 use super::{
-    GenericError, HeaderToStrError, HttpError, HyperError, JsonError, JwtError,
+    GenericError, HeaderToStrError, HttpError, HyperError, SerdeJsonError, JwtError,
     StringFromUtf8Error, SysInfoError, UrlParseError,
 };
 use std::{error, fmt};
@@ -119,12 +119,12 @@ pub(crate) enum ApiError {
     Http(HttpError),
     Hyper(HyperError),
     Jwt(JwtError),
-    Url(UrlParseError),
+    UrlParse(UrlParseError),
     Authorize(OauthError),
     Token(OauthError),
     StringFromUtf8(StringFromUtf8Error),
     HeaderToStr(HeaderToStrError),
-    Json(JsonError),
+    SerdeJson(SerdeJsonError),
     SysInfo(SysInfoError),
     BadRequest(String),
     Fatal(String),
@@ -153,14 +153,14 @@ impl fmt::Display for ApiError {
             Self::Http(ref err) => write!(f, "Http error: {}", err),
             Self::Hyper(ref err) => write!(f, "Hyper error: {}", err),
             Self::Jwt(ref err) => write!(f, "Jwt error: {}", err),
-            Self::Url(ref err) => write!(f, "Url parse error: {}", err),
+            Self::UrlParse(ref err) => write!(f, "Url parse error: {}", err),
             Self::Authorize(ref err) => write!(f, "Authorize error: {:?}", err),
             Self::Token(ref err) => write!(f, "Token error: {:?}", err),
             Self::StringFromUtf8(ref err) => {
                 write!(f, "String from utf8 error: {:?}", err)
             }
             Self::HeaderToStr(ref err) => write!(f, "Header to string error: {:?}", err),
-            Self::Json(ref err) => write!(f, "Json error: {:?}", err),
+            Self::SerdeJson(ref err) => write!(f, "Json error: {:?}", err),
             Self::SysInfo(ref err) => write!(f, "System info error: {:?}", err),
             Self::BadRequest(ref cause) => write!(f, "Bad request error: {}", cause),
             Self::Fatal(ref cause) => write!(f, "Fatal error: {}", cause),

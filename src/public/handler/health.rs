@@ -1,6 +1,6 @@
+use std::sync::Arc;
 use std::time::Instant;
 
-use crate::db::Pool;
 /// Health Checklist:
 /// o Downstream Operation Status
 ///   - Your API may depend on other APIs to operate. Make sure to check the
@@ -16,9 +16,11 @@ use crate::db::Pool;
 /// o In-flight messages
 ///   - Does your API works with message queues? Too many in-flight messages
 ///     can be a sign of an underlying issue.
-use crate::errors::{ApiError, ApiResult, GenericResult};
+use crate::error::{ApiError, ApiResult, GenericResult};
 use crate::{HeaderValues, MimeValues};
 use hyper::{Body, Request, Response, StatusCode};
+use mongodb::Database;
+use mongodb::bson::doc;
 use routerify::prelude::*;
 use sys_info::mem_info;
 
@@ -91,15 +93,17 @@ pub(crate) async fn handler_health_live(_: Request<Body>) -> ApiResult<Response<
 }
 
 async fn check_database(req: Request<Body>) -> GenericResult<()> {
-    let pool = req
-        .data::<Pool>()
+    let db = req
+        .data::<Arc<Database>>()
         .ok_or_else(ApiError::fatal("Unable to get database pool connection"))?;
 
-    let db = pool.get().await.map_err(|e| e.to_string())?;
 
-    db.query_one("SELECT 1", &[])
+    let result = db
+        .run_command(doc! { "ping": 1i32 }, None)
         .await
         .map_err(|e| e.to_string())?;
 
+
+    // result.get("ok");
     Ok(())
 }

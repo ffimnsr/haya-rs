@@ -28,15 +28,14 @@ serde = "1.0"
 serde_json = "= 1.0.72"
 serde_yaml = "0.8"
 tokio = { version = "1.8.1", features = ["rt-multi-thread", "macros", "time"] }
+mongodb = "2.2"
+bson = { version = "2.1", features = ["uuid-0_8", "chrono-0_4"] }
 uuid = { version = "0.8", features = ["serde", "v4"] }
 jsonwebtoken = "= 7.2.1"
 base64 = "0.13"
 url = { version = "2.1", features = ["serde"] }
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
-deadpool-postgres = "0.7"
-tokio-postgres = { version = "0.7", features = ["with-uuid-0_8", "with-serde_json-1", "with-chrono-0_4"] }
-postgres-types = { version = "0.2", features = ["derive"] }
-clap = "3.0.0-rc.5"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+clap = { version = "3.1.18", features = ["derive"] }
 tinytemplate = "1.2"
 cookie = "= 0.12"
 rand = { version = "0.8", features = ["min_const_gen"] }
@@ -44,3 +43,6 @@ sha-1 = "0.10.0"
 sha2 = "0.10.0"
 lazy_static = "1.4.0"
 sys-info = "0.9"
+
+[patch.crates-io]
+jsonwebtoken = { git = "https://github.com/fzrepo/jsonwebtoken" }

@@ -1,18 +1,18 @@
+use std::sync::Arc;
+
 use hyper::header::HeaderValue;
 use hyper::{Body, Request, Response};
+use mongodb::Database;
 use routerify::prelude::*;
 use routerify::{Middleware, RequestInfo, Router};
-use std::sync::Arc;
 use uuid::Uuid;
 
-use super::handlers::{
+use super::handler::{
     error_handler, handler_authorize, handler_health_live, handler_health_ready,
     handler_index, handler_introspect, handler_jwks, handler_metadata,
     handler_not_found, handler_revoke, handler_token, handler_trace,
 };
-use crate::config::Config;
-use crate::db::Pool;
-use crate::errors::{ApiError, ApiResult, ServiceError, ServiceResult};
+use crate::error::{ApiError, ApiResult, ServiceError, ServiceResult};
 
 async fn add_request_id(req: Request<Body>) -> ApiResult<Request<Body>> {
     req.set_context(Uuid::new_v4());
@@ -50,11 +50,9 @@ async fn set_request_id_header(
 }
 
 pub(crate) fn router(
-    config: Arc<Config>,
-    db: Pool,
+    db: Arc<Database>,
 ) -> ServiceResult<Router<Body, ApiError>> {
     Router::<Body, ApiError>::builder()
-        .data(config.clone())
         .data(db.clone())
         .middleware(Middleware::pre(add_request_id))
         .middleware(Middleware::post_with_info(set_request_id_header))

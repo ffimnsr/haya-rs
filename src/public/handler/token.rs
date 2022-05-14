@@ -1,11 +1,7 @@
-use crate::db::Pool;
-use crate::defaults::{
-    ACCESS_TOKEN_LIFETIME, REFRESH_TOKEN_LIFETIME, SHARED_DECODING_KEY,
-    SHARED_ENCODING_KEY,
-};
-use crate::errors::api_error::OauthError;
-use crate::errors::{ApiError, ApiResult};
-use crate::models::{
+use crate::defaults::*;
+use crate::error::api_error::OauthError;
+use crate::error::{ApiError, ApiResult};
+use crate::model::{
     AuthorizationCodeClaims, Client, OauthAccessToken, OauthAuthorizationCode,
     OauthRefreshToken, StandardTokenClaims,
 };
@@ -13,10 +9,12 @@ use crate::{HeaderValues, MimeValues};
 use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use hyper::{Body, Request, Response, StatusCode};
 use jsonwebtoken::{Algorithm, Header, Validation};
+use mongodb::Database;
 use routerify::prelude::*;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::ops::{Add, Sub};
+use std::sync::Arc;
 use uuid::Uuid;
 
 /// The OAuth 2.0 Token Endpoint
@@ -29,9 +27,9 @@ use uuid::Uuid;
 /// To learn more about this, please refer to the specification:
 /// https://datatracker.ietf.org/doc/html/rfc6749#section-3.2
 pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body>> {
-    let pool = req
-        .data::<Pool>()
-        .ok_or_else(ApiError::fatal("Unable to get database pool connection"))?
+    let db = req
+        .data::<Arc<Database>>()
+        .ok_or_else(ApiError::fatal("Unable to get database connection"))?
         .clone();
 
     let request_id = req.context::<Uuid>().ok_or(
@@ -90,7 +88,7 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
                 .map_err(|_| ApiError::BadRequest("Unable to parse 'client_id'".into()))
         })?;
 
-    let client = Client::get_client(pool.clone(), client_id).await;
+    let client = Client::get_client(db.clone(), client_id).await;
     let grant_type = params.get("grant_type").map(|c| c.to_owned()).ok_or_else(
         ApiError::bad_request("Missing body parameters 'grant_type'"),
     )?;
@@ -169,7 +167,7 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
             ))?;
 
         let stored_auth_code =
-            OauthAuthorizationCode::get_authorization_code(&pool, &claims.jwt_id)
+            OauthAuthorizationCode::get_authorization_code(db.clone(), &claims.jwt_id)
                 .await
                 .map_err(ApiError::Other)?;
 
@@ -188,7 +186,7 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
             }
         }
 
-        OauthAuthorizationCode::revoke_authorization_code(&pool, &claims.jwt_id)
+        OauthAuthorizationCode::revoke_authorization_code(db.clone(), &claims.jwt_id)
             .await
             .map_err(ApiError::Other)?;
 
@@ -232,7 +230,7 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
             current_time,
         );
 
-        access_token_client.save_access_token(&pool).await.unwrap();
+        access_token_client.save_access_token(db.clone()).await.unwrap();
 
         let refresh_token_expiration_time =
             current_time.add(Duration::seconds(REFRESH_TOKEN_LIFETIME));
@@ -274,7 +272,7 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
         );
 
         refresh_token_client
-            .save_refresh_token(&pool)
+            .save_refresh_token(db.clone())
             .await
             .unwrap();
 
@@ -338,7 +336,7 @@ pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body
             );
         }
 
-        OauthRefreshToken::revoke_refresh_token(&pool, &claims.jwt_id)
+        OauthRefreshToken::revoke_refresh_token(db, &claims.jwt_id)
             .await
             .unwrap();
 

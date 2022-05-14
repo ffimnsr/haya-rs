@@ -1,4 +1,5 @@
-mod authenticate;
+// mod authenticate;
+
 mod authorize;
 mod health;
 mod introspect;
@@ -8,7 +9,7 @@ mod revoke;
 mod token;
 mod trace;
 
-use crate::errors::{ApiError, ApiResult, ServiceError};
+use crate::error::{ApiError, ApiResult, ServiceError};
 use crate::{HeaderValues, MimeValues};
 use hyper::{Body, Method, Request, Response, StatusCode};
 use url::Url;

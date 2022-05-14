@@ -25,7 +25,7 @@ openssl ecparam -genkey -noout -name prime256v1 |
 To generate the counterpart public key:
 
 ```
-openssl ec -in key.pem -pubout -out ./certs/pub.pem
+openssl ec -in ./certs/priv-key.pem -pubout -out ./certs/pub.pem
 ```
 
 ### Contribution

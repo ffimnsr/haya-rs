@@ -1,26 +1,69 @@
 //! This module is the main entrypoint for haya auth.
 
-pub(crate) use crate::mime as MimeValues;
-use clap::App;
-pub(crate) use hyper::header as HeaderValues;
-use std::env;
-
-use crate::config::Config;
-use crate::errors::ServiceResult;
-
-mod config;
-mod db;
 mod defaults;
-mod errors;
+mod error;
 mod mime;
-mod models;
+mod model;
 mod public;
+
+use crate::defaults::{DEFAULT_DSN, DEFAULT_DB};
+pub(crate) use crate::mime as MimeValues;
+pub(crate) use hyper::header as HeaderValues;
+use clap::{Command, arg};
+use mongodb::options::ClientOptions;
+use std::{env, sync::Arc};
+
+use crate::error::{ServiceResult, ServiceError};
 
 const APP_NAME: &str = env!("CARGO_PKG_NAME");
 const APP_DESCRIPTION: &str = env!("CARGO_PKG_DESCRIPTION");
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
-const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
+
+fn cli() -> Command<'static> {
+    Command::new(APP_NAME)
+        .version(VERSION)
+        .author(AUTHORS)
+        .about(APP_DESCRIPTION)
+        .subcommand_required(true)
+        .arg_required_else_help(true)
+        .allow_external_subcommands(true)
+        .allow_invalid_utf8_for_external_subcommands(true)
+        .subcommand(
+            Command::new("client")
+                .about("Manage OAuth 2.0 Clients")
+                .subcommand_required(true)
+                .arg_required_else_help(true)
+                .subcommand(
+                    Command::new("create")
+                        .about("Create a new OAuth 2.0 Client")
+                )
+                .subcommand(
+                    Command::new("delete")
+                        .about("Delete an OAuth 2.0 Client")
+                )
+                .subcommand(
+                    Command::new("get")
+                        .about("Get an OAuth 2.0 Client")
+                )
+                .subcommand(
+                    Command::new("list")
+                        .about("List OAuth 2.0 Clients")
+                )
+                .subcommand(
+                    Command::new("update")
+                        .about("Update an entire OAuth 2.0 Client")
+                )
+        )
+        .subcommand(
+            Command::new("serve")
+                .arg_required_else_help(true)
+        )
+        .subcommand(
+            Command::new("token")
+                .about("Issue and Manage OAuth2 tokens")
+        )
+}
 
 #[tokio::main]
 async fn main() -> ServiceResult<()> {
@@ -34,18 +77,31 @@ async fn main() -> ServiceResult<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let _ = App::new(APP_NAME)
-        .version(VERSION)
-        .author(AUTHORS)
-        .about(APP_DESCRIPTION)
-        .get_matches();
+    let _ = cli().get_matches();
+
+    let dsn = env::var("DSN").ok();
+    let dsn = match dsn {
+        Some(x) => x,
+        None => DEFAULT_DSN.to_string(),
+    };
+
+    let client_options = ClientOptions::parse(dsn)
+        .await
+        .map_err(ServiceError::Mongo)?;
+    let client = mongodb::Client::with_options(client_options).map_err(ServiceError::Mongo)?;
+    let db = Arc::new(client.database(DEFAULT_DB));
+
 
     log::info!("Booting up Haya OP v{}", VERSION);
 
-    let config_path = format!("{}/config.yaml", MANIFEST_DIR);
-    let config = Config::parse_config(&config_path)?;
-    log::info!("Config file: {}", config_path);
+    let port = env::var("PORT")
+        .map(|x| x.parse::<u16>())
+        .ok();
 
-    let db = db::get_db_pool()?;
-    public::serve(config, db.clone()).await
+    let port = match port {
+        Some(x) => x.map_err(|_| ServiceError::DefinedError("Unable to parse PORT environment variable."))?,
+        None => 8080,
+    };
+
+    public::serve(port, db.clone()).await
 }

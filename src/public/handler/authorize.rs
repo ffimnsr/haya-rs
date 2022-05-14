@@ -1,15 +1,16 @@
-use crate::db::Pool;
 use crate::defaults::{AUTHORIZATION_CODE_LIFETIME, SHARED_ENCODING_KEY};
-use crate::errors::api_error::OauthError;
-use crate::errors::{ApiError, ApiResult};
-use crate::models::{AuthorizationCodeClaims, Client, OauthAuthorizationCode};
+use crate::error::api_error::OauthError;
+use crate::error::{ApiError, ApiResult};
+use crate::model::{AuthorizationCodeClaims, Client, OauthAuthorizationCode};
 use crate::HeaderValues;
 use chrono::{DateTime, Duration, Utc};
 use hyper::{Body, Request, Response, StatusCode, Uri};
 use jsonwebtoken::{Algorithm, Header};
+use mongodb::Database;
 use routerify::prelude::*;
 use std::collections::HashMap;
 use std::ops::{Add, Sub};
+use std::sync::Arc;
 use url::Url;
 use uuid::Uuid;
 
@@ -26,9 +27,9 @@ use uuid::Uuid;
 pub(crate) async fn handler_authorize(
     mut req: Request<Body>,
 ) -> ApiResult<Response<Body>> {
-    let pool = req
-        .data::<Pool>()
-        .ok_or_else(ApiError::fatal("Unable to get database pool connection"))?
+    let db = req
+        .data::<Arc<Database>>()
+        .ok_or_else(ApiError::fatal("Unable to get database connection"))?
         .clone();
 
     let request_id = req
@@ -76,7 +77,7 @@ pub(crate) async fn handler_authorize(
             })
         })?;
 
-    let client = Client::get_client(pool.clone(), client_id).await;
+    let client = Client::get_client(db.clone(), client_id).await;
     validate_grants(&client, &redirect_uri, &state)?;
     validate_redirect_uris(&client, &redirect_uri, &state)?;
     validate_response_type(&params, &client, &redirect_uri, &state)?;
@@ -106,7 +107,7 @@ pub(crate) async fn handler_authorize(
         )?;
 
     let authorization_code = generate_authorization_code(
-        pool.clone(),
+        db.clone(),
         request_id,
         client_id,
         &requested_scope,
@@ -151,7 +152,7 @@ fn build_response(
     redirect_uri: &str,
     state: &str,
 ) -> ApiResult<Response<Body>> {
-    let mut url = Url::parse(redirect_uri).map_err(ApiError::Url)?;
+    let mut url = Url::parse(redirect_uri).map_err(ApiError::UrlParse)?;
     url.query_pairs_mut()
         .clear()
         .append_pair("code", authorization_code)
@@ -269,7 +270,7 @@ fn validate_response_type(
 }
 
 async fn generate_authorization_code(
-    pool: Pool,
+    db: Arc<Database>,
     request_id: Uuid,
     client_id: Uuid,
     requested_scope: &str,
@@ -314,7 +315,7 @@ async fn generate_authorization_code(
             })?;
 
     save_authorization_code(
-        pool.clone(),
+        db.clone(),
         jwt_id,
         client_id,
         request_id,
@@ -334,7 +335,7 @@ async fn generate_authorization_code(
 }
 
 async fn save_authorization_code(
-    pool: Pool,
+    db: Arc<Database>,
     jwt_id: Uuid,
     client_id: Uuid,
     request_id: Uuid,
@@ -364,7 +365,7 @@ async fn save_authorization_code(
     );
 
     auth_db
-        .save_authorization_code(&pool)
+        .save_authorization_code(db)
         .await
         .map_err(ApiError::Other)
 }
