@@ -22,7 +22,7 @@ where
     let headers = res.headers_mut();
 
     let origin =
-        env::var("FRONTEND_URL").expect("FRONTEND_URL environment variable not set");
+        env::var("WHITELIST_DOMAINS").expect("WHITELIST_DOMAINS environment variable not set");
 
     // Allow only request coming from this origin.
     headers.insert(

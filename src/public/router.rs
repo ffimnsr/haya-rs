@@ -1,17 +1,11 @@
-use std::sync::Arc;
-
 use hyper::header::HeaderValue;
 use hyper::{Body, Request, Response};
-use mongodb::Database;
 use routerify::prelude::*;
 use routerify::{Middleware, RequestInfo, Router};
 use uuid::Uuid;
 
-use super::handler::{
-    error_handler, handler_authorize, handler_health_live, handler_health_ready,
-    handler_index, handler_introspect, handler_jwks, handler_metadata,
-    handler_not_found, handler_revoke, handler_token, handler_trace,
-};
+use super::handler::*;
+use crate::DbContext;
 use crate::error::{ApiError, ApiResult, ServiceError, ServiceResult};
 
 async fn add_request_id(req: Request<Body>) -> ApiResult<Request<Body>> {
@@ -49,8 +43,82 @@ async fn set_request_id_header(
     Ok(res)
 }
 
+fn wellknown_router() -> Router<Body, ApiError> {
+    Router::<Body, ApiError>::builder()
+        .get("/jwks.json", handler_jwks)
+        .get("/oauth-authorization-server", handler_metadata)
+        .get("/openid-configuration", handler_metadata)
+        .build()
+        .unwrap()
+}
+
+fn health_router() -> Router<Body, ApiError> {
+    Router::<Body, ApiError>::builder()
+        .get("/alive", handler_health_alive)
+        .get("/ready", handler_health_ready)
+        .build()
+        .unwrap()
+}
+
+fn clients_router() -> Router<Body, ApiError> {
+    Router::<Body, ApiError>::builder()
+        .get("/", handler_metadata)
+        .post("/", handler_metadata)
+        .get("/:id", handler_metadata)
+        .put("/:id", handler_metadata)
+        .patch("/:id", handler_metadata)
+        .delete("/:id", handler_metadata)
+        .build()
+        .unwrap()
+}
+
+fn keys_router() -> Router<Body, ApiError> {
+    Router::<Body, ApiError>::builder()
+        .get("/:set", handler_metadata)
+        .put("/:set", handler_metadata)
+        .post("/:set", handler_metadata)
+        .delete("/:set", handler_metadata)
+        .get("/:set/:kid", handler_metadata)
+        .put("/:set/:kid", handler_metadata)
+        .delete("/:set/:kid", handler_metadata)
+        .build()
+        .unwrap()
+}
+
+fn oauth2_auth_router() -> Router<Body, ApiError> {
+    Router::<Body, ApiError>::builder()
+    .get("/", handler_authorize)
+    .get("/requests/consent", handler_introspect)
+    .put("/requests/consent/accept", handler_introspect)
+    .put("/requests/consent/reject", handler_introspect)
+    .get("/requests/login", handler_introspect)
+    .put("/requests/login/accept", handler_introspect)
+    .put("/requests/login/reject", handler_introspect)
+    .get("/requests/logout", handler_introspect)
+    .put("/requests/logout/accept", handler_introspect)
+    .put("/requests/logout/reject", handler_introspect)
+    .get("/sessions/consent", handler_introspect)
+    .delete("/sessions/consent", handler_introspect)
+    .delete("/sessions/login", handler_introspect)
+    .build()
+    .unwrap()
+}
+
+fn oauth2_router() -> Router<Body, ApiError> {
+    Router::<Body, ApiError>::builder()
+        .scope("/auth", oauth2_auth_router())
+        .post("/flush", handler_introspect)
+        .post("/instropect", handler_introspect)
+        .post("/revoke", handler_introspect)
+        .get("/sessions/logout", handler_introspect)
+        .post("/token", handler_token)
+        .delete("/tokens", handler_token)
+        .build()
+        .unwrap()
+}
+
 pub(crate) fn router(
-    db: Arc<Database>,
+    db: DbContext,
 ) -> ServiceResult<Router<Body, ApiError>> {
     Router::<Body, ApiError>::builder()
         .data(db.clone())
@@ -59,14 +127,13 @@ pub(crate) fn router(
         .middleware(Middleware::post_with_info(logger))
         .get("/", handler_index)
         .get("/trace", handler_trace)
-        .get("/.well-known/jwks.json", handler_jwks)
-        .get("/.well-known/oauth-authorization-server", handler_metadata)
-        .get("/oauth/authorize", handler_authorize)
-        .post("/oauth/token", handler_token)
-        .get("/oauth/revoke", handler_revoke)
-        .get("/oauth/token/introspect", handler_introspect)
-        .get("/health/live", handler_health_live)
-        .get("/health/ready", handler_health_ready)
+        .get("/userinfo", handler_trace)
+        .get("/version", handler_trace)
+        .scope("/.well-known", wellknown_router())
+        .scope("/clients", clients_router())
+        .scope("/keys", keys_router())
+        .scope("/oauth2", oauth2_router())
+        .scope("/health", health_router())
         .any(handler_not_found)
         .err_handler(error_handler)
         .build()

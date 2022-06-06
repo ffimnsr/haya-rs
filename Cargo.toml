@@ -31,6 +31,8 @@ tokio = { version = "1.8.1", features = ["rt-multi-thread", "macros", "time"] }
 mongodb = "2.2"
 bson = { version = "2.1", features = ["uuid-0_8", "chrono-0_4"] }
 uuid = { version = "0.8", features = ["serde", "v4"] }
+bigdecimal = "0.2"
+num-bigint = "0.3"
 jsonwebtoken = "= 7.2.1"
 base64 = "0.13"
 url = { version = "2.1", features = ["serde"] }
@@ -43,6 +45,7 @@ sha-1 = "0.10.0"
 sha2 = "0.10.0"
 lazy_static = "1.4.0"
 sys-info = "0.9"
+async-trait = "0.1"
 
 [patch.crates-io]
 jsonwebtoken = { git = "https://github.com/fzrepo/jsonwebtoken" }

@@ -4,22 +4,15 @@ use crate::error::{ApiError, ApiResult};
 use crate::model::OauthServerMetadata;
 use crate::{HeaderValues, MimeValues};
 
-pub(crate) async fn handler_metadata(_: Request<Body>) -> ApiResult<Response<Body>> {
+pub(crate) async fn handler_userinfo(_: Request<Body>) -> ApiResult<Response<Body>> {
     let metadata = OauthServerMetadata {
         issuer: String::from("/"),
-        authorization_endpoint: String::from("/oauth2/auth"),
-        token_endpoint: Some(String::from("/oauth2/token")),
+        authorization_endpoint: String::from("/oauth/authorize"),
+        token_endpoint: Some(String::from("/oauth/token")),
         jwks_uri: String::from("/.well-known/jwks.json"),
         registration_endpoint: None,
         scopes_supported: Some(vec![String::from("profile")]),
-        response_types_supported: vec![
-            String::from("code"),
-            String::from("code id_token"),
-            String::from("id_token"),
-            String::from("token id_token"),
-            String::from("token"),
-            String::from("token id_token code"),
-        ],
+        response_types_supported: vec![String::from("code")],
         response_modes_supported: Some(vec![
             String::from("query"),
             String::from("fragment"),
@@ -54,8 +47,8 @@ pub(crate) async fn handler_metadata(_: Request<Body>) -> ApiResult<Response<Bod
             String::from("ES256"),
         ]),
         code_challenge_methods_supported: Some(vec![
-            String::from("plain"),
             String::from("S256"),
+            String::from("plain"),
         ]),
     };
 

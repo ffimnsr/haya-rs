@@ -1,30 +1,49 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta http-equiv="X-UA-Compatible" content="IE=edge">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" integrity="sha512-wnea99uKIC3TJF7v4eKk4Y+lMz2Mklv18+r4na2Gn1abDRPPOeef95xTzdwGD9e6zXJBteMIhZ1+68QC5byJZw==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <meta http-equiv="refresh" content="7; URL={redirect_to}">
 </head>
-<body class="bg-gray-100">
-    <div class="min-h-screen flex items-center justify-center py-12 px-4 sm:px-6 lg:px-8">
-        <div class="rounded shadow-md bg-white p-8 max-w-md w-full space-y-8">
-            <form class="space-y-6" action="#" method="POST">
-                <div>
-                    <p>Do you wish to logout?</p>
-                    <button type="submit" class="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
-                        <span class="absolute left-0 inset-y-0 flex items-center pl-3">
-                            <!-- Heroicon name: solid/lock-closed -->
-                            <svg class="h-5 w-5 text-indigo-500 group-hover:text-indigo-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-                                <path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd" />
-                            </svg>
-                        </span>
-                        Logout
-                    </button>
-                </div>
-            </form>
-        </div>
-    </div>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/alpinejs/3.7.0/cdn.min.js" integrity="sha512-snKy1ArwmuMarok87UQk7lVf2AmQ/Mw2Zv2ziPX0hpoAu/uGQSxf0AaqtQPgp0DJ51Kb7veRL4aNcIIBlk8YSQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<style type="text/css">
+    iframe { position: absolute; left: 0; top: 0; height: 0; width: 0; border: none; }
+</style>
+<script>
+    const total = {front_channel_logout_urls_count};
+    const redir = {redirect_to};
+
+	function redirect() {
+		window.location.replace(redir);
+		// In case replace failed try href
+		setTimeout(function () {
+			window.location.href = redir;
+		}, 250); // Show message after http-equiv="refresh"
+	}
+
+    function done() {
+        total--;
+        if (total < 1) {
+			setTimeout(redirect, 500);
+        }
+    }
+
+	setTimeout(redirect, 7000); // redirect after 5 seconds if e.g. an iframe doesn't load
+
+	// If the redirect takes unusually long, show a message
+	setTimeout(function () {
+		document.getElementById("redir").style.display = "block";
+	}, 2000);
+</script>
+<body>
+    <noscript>
+        <p>
+            JavaScript is disabled - you should be redirected in 5 seconds but if not, click <a
+                href="{redirect_to}">here</a> to continue.
+        </p>
+    </noscript>
+
+    <p id="redir" style="display: none">
+        Redirection takes unusually long. If you are not being redirected within the next seconds, click <a href="{redirect_to}">here</a> to continue.
+    </p>
+
+    {{for url in front_channel_logout_urls}}<iframe src ="{url}" onload="done(this)"></iframe>{{endfor}}
 </body>
 </html>

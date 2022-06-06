@@ -1,4 +1,4 @@
-use crate::defaults::*;
+use crate::{defaults::*, DbContext};
 use crate::error::api_error::OauthError;
 use crate::error::{ApiError, ApiResult};
 use crate::model::{
@@ -9,12 +9,10 @@ use crate::{HeaderValues, MimeValues};
 use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use hyper::{Body, Request, Response, StatusCode};
 use jsonwebtoken::{Algorithm, Header, Validation};
-use mongodb::Database;
 use routerify::prelude::*;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::ops::{Add, Sub};
-use std::sync::Arc;
 use uuid::Uuid;
 
 /// The OAuth 2.0 Token Endpoint
@@ -28,7 +26,7 @@ use uuid::Uuid;
 /// https://datatracker.ietf.org/doc/html/rfc6749#section-3.2
 pub(crate) async fn handler_token(req: Request<Body>) -> ApiResult<Response<Body>> {
     let db = req
-        .data::<Arc<Database>>()
+        .data::<DbContext>()
         .ok_or_else(ApiError::fatal("Unable to get database connection"))?
         .clone();
 

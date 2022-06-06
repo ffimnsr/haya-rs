@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::time::Instant;
 
 /// Health Checklist:
@@ -17,9 +16,8 @@ use std::time::Instant;
 ///   - Does your API works with message queues? Too many in-flight messages
 ///     can be a sign of an underlying issue.
 use crate::error::{ApiError, ApiResult, GenericResult};
-use crate::{HeaderValues, MimeValues};
+use crate::{HeaderValues, MimeValues, DbContext};
 use hyper::{Body, Request, Response, StatusCode};
-use mongodb::Database;
 use mongodb::bson::doc;
 use routerify::prelude::*;
 use sys_info::mem_info;
@@ -65,7 +63,7 @@ pub(crate) async fn handler_health_ready(
 /// The liveness endpoint, returns the liveness of a microservice. If the check
 /// does not return the expected response, it means that the process is
 /// unhealthy or dead and should be replaced as soon as possible.
-pub(crate) async fn handler_health_live(_: Request<Body>) -> ApiResult<Response<Body>> {
+pub(crate) async fn handler_health_alive(_: Request<Body>) -> ApiResult<Response<Body>> {
     let mem = mem_info().map_err(ApiError::SysInfo)?;
 
     let data = serde_json::json!({
@@ -94,7 +92,7 @@ pub(crate) async fn handler_health_live(_: Request<Body>) -> ApiResult<Response<
 
 async fn check_database(req: Request<Body>) -> GenericResult<()> {
     let db = req
-        .data::<Arc<Database>>()
+        .data::<DbContext>()
         .ok_or_else(ApiError::fatal("Unable to get database pool connection"))?;
 
 

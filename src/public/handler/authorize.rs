@@ -2,15 +2,13 @@ use crate::defaults::{AUTHORIZATION_CODE_LIFETIME, SHARED_ENCODING_KEY};
 use crate::error::api_error::OauthError;
 use crate::error::{ApiError, ApiResult};
 use crate::model::{AuthorizationCodeClaims, Client, OauthAuthorizationCode};
-use crate::HeaderValues;
+use crate::{HeaderValues, DbContext};
 use chrono::{DateTime, Duration, Utc};
 use hyper::{Body, Request, Response, StatusCode, Uri};
 use jsonwebtoken::{Algorithm, Header};
-use mongodb::Database;
 use routerify::prelude::*;
 use std::collections::HashMap;
 use std::ops::{Add, Sub};
-use std::sync::Arc;
 use url::Url;
 use uuid::Uuid;
 
@@ -28,7 +26,7 @@ pub(crate) async fn handler_authorize(
     mut req: Request<Body>,
 ) -> ApiResult<Response<Body>> {
     let db = req
-        .data::<Arc<Database>>()
+        .data::<DbContext>()
         .ok_or_else(ApiError::fatal("Unable to get database connection"))?
         .clone();
 
@@ -270,7 +268,7 @@ fn validate_response_type(
 }
 
 async fn generate_authorization_code(
-    db: Arc<Database>,
+    db: DbContext,
     request_id: Uuid,
     client_id: Uuid,
     requested_scope: &str,
@@ -335,7 +333,7 @@ async fn generate_authorization_code(
 }
 
 async fn save_authorization_code(
-    db: Arc<Database>,
+    db: DbContext,
     jwt_id: Uuid,
     client_id: Uuid,
     request_id: Uuid,

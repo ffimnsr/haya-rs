@@ -1,10 +1,7 @@
 #![allow(dead_code)]
 
-use std::sync::Arc;
-
-use crate::error::GenericResult;
+use crate::{error::GenericResult, DbContext};
 use chrono::{DateTime, Utc};
-use mongodb::Database;
 use mongodb::bson::doc;
 use serde::{Serialize, Deserialize};
 use uuid::Uuid;
@@ -43,7 +40,7 @@ impl OauthAccessToken {
         }
     }
 
-    pub async fn save_access_token(&self, db: Arc<Database>) -> GenericResult<()> {
+    pub async fn save_access_token(&self, db: DbContext) -> GenericResult<()> {
         let collection = db.collection::<Self>(Self::DEFAULT_COLLECTION);
 
         let result = collection.insert_one(self, None)
@@ -53,7 +50,7 @@ impl OauthAccessToken {
         Ok(())
     }
 
-    pub async fn get_access_token(db: Arc<Database>, jwt_id: &Uuid) -> GenericResult<Self> {
+    pub async fn get_access_token(db: DbContext, jwt_id: &Uuid) -> GenericResult<Self> {
         let collection = db.collection::<Self>(Self::DEFAULT_COLLECTION);
 
         let result = collection
@@ -65,7 +62,7 @@ impl OauthAccessToken {
         Ok(result)
     }
 
-    pub async fn revoke_access_token(db: Arc<Database>, jwt_id: &Uuid) -> GenericResult<()> {
+    pub async fn revoke_access_token(db: DbContext, jwt_id: &Uuid) -> GenericResult<()> {
         let collection = db.collection::<Self>(Self::DEFAULT_COLLECTION);
 
         let result = collection

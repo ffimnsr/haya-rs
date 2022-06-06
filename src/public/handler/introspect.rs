@@ -2,6 +2,7 @@ use crate::error::{ApiError, ApiResult};
 use crate::{HeaderValues, MimeValues};
 use hyper::{Body, Request, Response, StatusCode};
 
+/// Instropect Oauth2 Tokens
 pub(crate) async fn handler_introspect(_: Request<Body>) -> ApiResult<Response<Body>> {
     let data = serde_json::json!({
         "success": true,

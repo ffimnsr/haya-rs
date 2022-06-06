@@ -5,7 +5,7 @@ mod health;
 mod introspect;
 mod jwks;
 mod metadata;
-mod revoke;
+mod oauth2;
 mod token;
 mod trace;
 
@@ -19,7 +19,6 @@ pub(crate) use health::*;
 pub(crate) use introspect::handler_introspect;
 pub(crate) use jwks::handler_jwks;
 pub(crate) use metadata::handler_metadata;
-pub(crate) use revoke::handler_revoke;
 pub(crate) use token::handler_token;
 pub(crate) use trace::handler_trace;
 

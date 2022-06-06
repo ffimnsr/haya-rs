@@ -1,14 +1,12 @@
 mod handler;
 mod router;
 
-use std::sync::Arc;
 use hyper::Server;
-use mongodb::Database;
 use routerify::RouterService;
 
-use crate::error::{ServiceError, ServiceResult};
+use crate::{error::{ServiceError, ServiceResult}, DbContext};
 
-pub(crate) async fn serve(port: u16, db: Arc<Database>,) -> ServiceResult<()> {
+pub(crate) async fn serve(port: u16, db: DbContext) -> ServiceResult<()> {
     let router = router::router(db)?;
 
     let service = RouterService::new(router).map_err(ServiceError::Router)?;

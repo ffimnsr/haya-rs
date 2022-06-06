@@ -9,11 +9,13 @@ mod public;
 use crate::defaults::{DEFAULT_DSN, DEFAULT_DB};
 pub(crate) use crate::mime as MimeValues;
 pub(crate) use hyper::header as HeaderValues;
-use clap::{Command, arg};
-use mongodb::options::ClientOptions;
+use clap::Command;
+use mongodb::{options::ClientOptions, Database};
 use std::{env, sync::Arc};
 
 use crate::error::{ServiceResult, ServiceError};
+
+pub type DbContext = Arc<Database>;
 
 const APP_NAME: &str = env!("CARGO_PKG_NAME");
 const APP_DESCRIPTION: &str = env!("CARGO_PKG_DESCRIPTION");
@@ -89,8 +91,7 @@ async fn main() -> ServiceResult<()> {
         .await
         .map_err(ServiceError::Mongo)?;
     let client = mongodb::Client::with_options(client_options).map_err(ServiceError::Mongo)?;
-    let db = Arc::new(client.database(DEFAULT_DB));
-
+    let db: DbContext = Arc::new(client.database(DEFAULT_DB));
 
     log::info!("Booting up Haya OP v{}", VERSION);
 
