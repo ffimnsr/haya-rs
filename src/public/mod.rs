@@ -1,23 +1,22 @@
-mod handler;
+// mod handler;
 mod router;
 
-use hyper::Server;
-use routerify::RouterService;
+use anyhow::Context;
+use axum::Router;
+use tokio::net::TcpListener;
 
 use crate::{error::{ServiceError, ServiceResult}, DbContext};
 
-pub(crate) async fn serve(port: u16, db: DbContext) -> ServiceResult<()> {
-    let router = router::router(db)?;
+pub(crate) async fn serve(port: u16, db: DbContext) -> anyhow::Result<()> {
+    let service = Router::new();
 
-    let service = RouterService::new(router).map_err(ServiceError::Router)?;
-
-    let addr = format!("[::]:{}", port).parse().map_err(ServiceError::AddrParser)?;
+    let addr = format!("[::]:{port}");
+    let listener = TcpListener::bind(&addr).await
+        .with_context(|| format!("Failed to bind to address {}", addr))?;
 
     log::info!("Haya OP is now listening at {}", addr);
-    Server::bind(&addr)
-        .http1_preserve_header_case(true)
-        .http1_title_case_headers(true)
-        .serve(service)
-        .await
-        .map_err(ServiceError::Hyper)
+    axum::serve(listener, service)
+        .await?;
+
+    Ok(())
 }

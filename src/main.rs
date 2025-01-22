@@ -8,9 +8,7 @@ mod public;
 
 use crate::defaults::{DEFAULT_DSN, DEFAULT_DB};
 pub(crate) use crate::mime as MimeValues;
-pub(crate) use hyper::header as HeaderValues;
 use clap::Command;
-use mongodb::{options::ClientOptions, Database};
 use std::{env, sync::Arc};
 
 use crate::error::{ServiceResult, ServiceError};
@@ -68,12 +66,8 @@ fn cli() -> Command<'static> {
 }
 
 #[tokio::main]
-async fn main() -> ServiceResult<()> {
+async fn main() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
-
-    if env::var("RUST_LOG").is_err() {
-        env::set_var("RUST_LOG", "haya=info,hyper=info");
-    }
 
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())

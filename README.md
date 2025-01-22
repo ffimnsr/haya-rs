@@ -28,6 +28,24 @@ To generate the counterpart public key:
 openssl ec -in ./certs/priv-key.pem -pubout -out ./certs/pub.pem
 ```
 
+### Endpoints
+
+- GET /settings
+- POST, PUT /admin/users/<user_id>
+- POST /admin/generate_link
+- POST /signup
+- POST /resend
+- POST /invite
+- GET, POST /verify
+- POST /otp
+- POST /recover
+- POST /token
+- GET, PUT /user
+- GET /reauthenticate
+- POST /logout
+- GET /authorize
+- GET /callback
+
 ### Contribution
 
 Unless you explicitly state otherwise, any contribution intentionally submitted
