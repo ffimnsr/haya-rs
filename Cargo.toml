@@ -33,3 +33,4 @@ axum = "0.8.2"
 anyhow = "1.0.95"
 sqlx = { version = "0.8.3", features = ["runtime-tokio", "tls-native-tls", "postgres", "derive", "chrono"] }
 chrono = { version = "0.4.39", features = ["serde"] }
+uuid = { version = "1.12.1", features = ["serde", "v4", "v7"] }

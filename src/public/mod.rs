@@ -1,20 +1,18 @@
-// mod handler;
+mod handler;
 mod router;
 
 use anyhow::Context;
-use axum::Router;
+use sqlx::PgPool;
 use tokio::net::TcpListener;
 
-use crate::{error::{ServiceError, ServiceResult}, DbContext};
-
-pub(crate) async fn serve(port: u16, db: DbContext) -> anyhow::Result<()> {
-    let service = Router::new();
+pub(crate) async fn serve(port: u16, db: PgPool) -> anyhow::Result<()> {
+    let service = router::create_router(db)?;
 
     let addr = format!("[::]:{port}");
     let listener = TcpListener::bind(&addr).await
         .with_context(|| format!("Failed to bind to address {}", addr))?;
 
-    log::info!("Haya OP is now listening at {}", addr);
+    println!("Haya is now listening at {}", listener.local_addr()?);
     axum::serve(listener, service)
         .await?;
 
