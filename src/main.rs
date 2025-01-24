@@ -2,9 +2,11 @@
 
 mod db;
 mod defaults;
+mod error;
 mod mime;
 mod model;
 mod public;
+mod utils;
 
 use crate::defaults::{
   DEFAULT_DATABASE_URL,

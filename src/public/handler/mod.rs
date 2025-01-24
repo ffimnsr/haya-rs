@@ -8,33 +8,18 @@
 // pub(crate) use introspect::handler_introspect;
 // pub(crate) use trace::handler_trace;
 
-use axum::response::{Html, IntoResponse};
+use axum::http::StatusCode;
+use axum::response::{
+  Html,
+  IntoResponse,
+};
 
 pub async fn index() -> Html<&'static str> {
-    Html("<h1>Welcome to Haya</h1>")
+  Html("<h1>Welcome to Haya</h1>")
 }
 
 pub async fn not_found() -> impl IntoResponse {
-    match *req.method() {
-        Method::OPTIONS => Response::builder()
-            .status(StatusCode::NO_CONTENT)
-            .header(HeaderValues::CONTENT_LENGTH, "0")
-            .body(Body::empty())
-            .map_err(ApiError::Http),
-
-        _ => {
-            let data = serde_json::json!({
-                "success": false,
-                "message": "Route not found",
-            });
-
-            Response::builder()
-                .status(StatusCode::NOT_FOUND)
-                .header(HeaderValues::CONTENT_TYPE, MimeValues::JSON_MIME_TYPE)
-                .body(Body::from(data.to_string()))
-                .map_err(ApiError::Http)
-        }
-    }
+  (StatusCode::NOT_FOUND, "Not found")
 }
 
 // pub(crate) async fn error_handler(err: routerify::RouteError) -> Response<Body> {

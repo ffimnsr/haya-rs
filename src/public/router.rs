@@ -1,6 +1,10 @@
+use std::time::Duration;
+
 use axum::routing::get;
 use axum::Router;
 use sqlx::PgPool;
+use tower_http::timeout::TimeoutLayer;
+use tower_http::trace::TraceLayer;
 
 use super::handler;
 
@@ -39,14 +43,21 @@ use super::handler;
 //     Ok(res)
 // }
 
-pub(crate) fn create_router(
+pub fn create_router(
     db: PgPool,
 ) -> anyhow::Result<Router> {
 
     let router = Router::new()
         .route("/", get(handler::index))
-        // .route("/trace", get(handler::trace))
-        .with_state(db);
+        .fallback(handler::not_found)
+        .with_state(db)
+        .layer((
+          TraceLayer::new_for_http(),
+
+          // Graceful shutdown will wait for outstanding requests to complete.
+          // Added a timeout to ensure requests are not waiting indefinitely.
+          TimeoutLayer::new(Duration::from_secs(10)),
+        ));
 
     Ok(router)
 }
