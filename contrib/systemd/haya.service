@@ -1,0 +1,27 @@
+[Unit]
+Description=Haya authentication server
+Documentation=https://github.com/ffimnsr/haya-rs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=haya
+Group=haya
+EnvironmentFile=-/etc/haya/haya.env
+ExecStart=/usr/local/bin/haya
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/haya
+StateDirectory=haya
+WorkingDirectory=/var/lib/haya
+
+[Install]
+WantedBy=multi-user.target
