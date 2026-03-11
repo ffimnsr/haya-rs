@@ -80,12 +80,30 @@ pub async fn update_user(
     }
 
     if let Some(ref email) = req.email {
-        sqlx::query("UPDATE auth.users SET email = $1, updated_at = $2 WHERE id = $3")
-            .bind(email)
-            .bind(now)
-            .bind(user_id)
-            .execute(&state.db)
-            .await?;
+        // Validate email format
+        if !crate::public::handler::signup::is_valid_email(email) {
+            return Err(AuthError::ValidationFailed("Invalid email format".to_string()));
+        }
+        // Check if email is already in use by another user
+        let existing: Option<(Uuid,)> = sqlx::query_as::<_, (Uuid,)>(
+            "SELECT id FROM auth.users WHERE email = $1 AND id != $2"
+        )
+        .bind(email)
+        .bind(user_id)
+        .fetch_optional(&state.db)
+        .await?;
+        if existing.is_some() {
+            return Err(AuthError::ValidationFailed("Email address is already in use".to_string()));
+        }
+        // Clear email_confirmed_at since the email has changed (requires re-confirmation)
+        sqlx::query(
+            "UPDATE auth.users SET email = $1, email_confirmed_at = NULL, updated_at = $2 WHERE id = $3"
+        )
+        .bind(email)
+        .bind(now)
+        .bind(user_id)
+        .execute(&state.db)
+        .await?;
     }
 
     if let Some(ref phone) = req.phone {

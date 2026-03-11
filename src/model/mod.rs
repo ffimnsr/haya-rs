@@ -77,6 +77,8 @@ pub struct TokenResponse {
     pub user: UserResponse,
 }
 
+/// Session model - kept for future session management endpoints.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Session {
     pub id: Uuid,

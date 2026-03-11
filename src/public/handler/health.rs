@@ -9,7 +9,8 @@ pub async fn health_check(State(state): State<AppState>) -> Result<Json<serde_js
         .await
         .map_err(crate::error::AuthError::DatabaseError)?;
     Ok(Json(json!({
-        "version": "0.2.0",
-        "name": "Haya Auth"
+        "version": env!("CARGO_PKG_VERSION"),
+        "name": env!("CARGO_PKG_NAME"),
+        "description": env!("CARGO_PKG_DESCRIPTION"),
     })))
 }

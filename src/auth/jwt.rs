@@ -5,6 +5,9 @@ use uuid::Uuid;
 
 use crate::error::AuthError;
 
+/// The audience value embedded in JWTs and validated on decode.
+pub const JWT_AUDIENCE: &str = "authenticated";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AmrEntry {
     pub method: String,
@@ -46,7 +49,7 @@ pub fn encode_token(
     let now = Utc::now().timestamp();
     let claims = Claims {
         sub: user_id.to_string(),
-        aud: "authenticated".to_string(),
+        aud: JWT_AUDIENCE.to_string(),
         exp: now + jwt_exp,
         iat: now,
         iss: issuer.to_string(),
@@ -73,7 +76,7 @@ pub fn encode_token(
 
 pub fn decode_token(token: &str, jwt_secret: &str) -> Result<TokenData<Claims>, AuthError> {
     let mut validation = Validation::new(Algorithm::HS256);
-    validation.set_audience(&["authenticated"]);
+    validation.set_audience(&[JWT_AUDIENCE]);
     validation.leeway = 0;
     decode::<Claims>(
         token,

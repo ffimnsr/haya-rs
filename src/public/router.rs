@@ -2,12 +2,48 @@ use std::time::Duration;
 
 use axum::routing::{get, post};
 use axum::Router;
-use tower_http::cors::CorsLayer;
+use axum::http::{HeaderValue, Method};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use super::handler;
 use crate::state::AppState;
+
+fn build_cors_layer() -> CorsLayer {
+    let allowed_origins = std::env::var("CORS_ALLOWED_ORIGINS").unwrap_or_default();
+    let origins: Vec<HeaderValue> = allowed_origins
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse::<HeaderValue>().ok())
+        .collect();
+
+    let allow_origin = if origins.is_empty() {
+        // Default: permissive only when no origins are configured
+        // In production, CORS_ALLOWED_ORIGINS should be set explicitly
+        AllowOrigin::any()
+    } else {
+        AllowOrigin::list(origins)
+    };
+
+    CorsLayer::new()
+        .allow_origin(allow_origin)
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([
+            axum::http::header::AUTHORIZATION,
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::ACCEPT,
+        ])
+        .allow_credentials(false)
+        .max_age(Duration::from_secs(3600))
+}
 
 pub fn create_router(state: AppState) -> Router {
     Router::new()
@@ -37,7 +73,7 @@ pub fn create_router(state: AppState) -> Router {
         )
         .fallback(handler::not_found)
         .with_state(state)
-        .layer(CorsLayer::permissive())
+        .layer(build_cors_layer())
         .layer(TraceLayer::new_for_http())
         .layer(TimeoutLayer::new(Duration::from_secs(30)))
 }

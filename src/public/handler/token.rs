@@ -71,6 +71,11 @@ async fn handle_password_grant(
         return Err(AuthError::InvalidCredentials);
     }
 
+    // Require email confirmation when mailer_autoconfirm is disabled
+    if !state.mailer_autoconfirm && user.email.is_some() && user.email_confirmed_at.is_none() {
+        return Err(AuthError::EmailNotConfirmed);
+    }
+
     let now = Utc::now();
     let session_id = Uuid::new_v4();
 
@@ -200,6 +205,7 @@ async fn handle_refresh_grant(
     .await?;
 
     sqlx::query("UPDATE auth.sessions SET refreshed_at = $1, updated_at = $2 WHERE id = $3")
+        // refreshed_at is 'timestamp without time zone' in the schema, so use naive_utc()
         .bind(now.naive_utc())
         .bind(now)
         .bind(session_id)
