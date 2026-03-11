@@ -229,7 +229,7 @@ pub async fn admin_update_user(
             .execute(&state.db)
             .await?;
         } else {
-            let duration_secs = parse_ban_duration(ban_duration);
+            let duration_secs = parse_ban_duration(ban_duration)?;
             let banned_until = now + chrono::Duration::seconds(duration_secs);
             sqlx::query(
                 "UPDATE auth.users SET banned_until = $1, updated_at = $2 WHERE id = $3"
@@ -270,14 +270,23 @@ pub async fn admin_delete_user(
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn parse_ban_duration(duration: &str) -> i64 {
+fn parse_ban_duration(duration: &str) -> Result<i64, AuthError> {
     if let Some(hours) = duration.strip_suffix('h') {
-        hours.parse::<i64>().unwrap_or(24) * 3600
+        hours.parse::<i64>()
+            .map(|h| h * 3600)
+            .map_err(|_| AuthError::ValidationFailed(format!("Invalid ban duration: {}", duration)))
     } else if let Some(days) = duration.strip_suffix('d') {
-        days.parse::<i64>().unwrap_or(1) * 86400
+        days.parse::<i64>()
+            .map(|d| d * 86400)
+            .map_err(|_| AuthError::ValidationFailed(format!("Invalid ban duration: {}", duration)))
     } else if let Some(minutes) = duration.strip_suffix('m') {
-        minutes.parse::<i64>().unwrap_or(60) * 60
+        minutes.parse::<i64>()
+            .map(|m| m * 60)
+            .map_err(|_| AuthError::ValidationFailed(format!("Invalid ban duration: {}", duration)))
     } else {
-        86400
+        Err(AuthError::ValidationFailed(format!(
+            "Invalid ban duration format: {}. Use format like '24h', '7d', or '30m'.",
+            duration
+        )))
     }
 }
