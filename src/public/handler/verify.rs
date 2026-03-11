@@ -141,7 +141,7 @@ async fn handle_recovery_verify(
         &state.issuer,
     )?;
 
-    let expires_at = Utc::now().timestamp() + state.jwt_exp;
+    let expires_at = now.timestamp() + state.jwt_exp;
     Ok(Json(VerifyResponse::Token(TokenResponse {
         access_token,
         token_type: "bearer".to_string(),
