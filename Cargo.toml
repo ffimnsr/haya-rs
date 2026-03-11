@@ -1,10 +1,10 @@
 [package]
 name = "haya"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["Edward Fitz Abucay <ffimnsr@pm.me>"]
-description = "An Oauth 2.0 server implemented in pure Rust"
-categories = ["authentication", "oauth2", "dpop`"]
-keywords = ["authentication", "oauth", "microservice", "provider", "cli"]
+description = "A Supabase Auth (GoTrue) compatible authentication server implemented in Rust"
+categories = ["authentication", "web-programming"]
+keywords = ["authentication", "supabase", "gotrue", "microservice", "provider"]
 license = "MIT OR Apache-2.0"
 homepage = "https://github.com/ffimnsr/haya-rs"
 repository = "https://github.com/ffimnsr/haya-rs"
@@ -13,25 +13,26 @@ readme = "README.md"
 exclude = [".gitignore"]
 
 [dependencies]
-dotenv = "0.15"
-log = "0.4"
+dotenvy = "0.15"
 tracing = "0.1"
-tracing-subscriber = { version = "0.2", features = ["tracing-log"] }
-reqwest = { version = "0.11", features = ["json"] }
-serde = "1.0"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.8.1", features = ["rt-multi-thread", "macros", "time", "signal"] }
-base64 = "0.13"
-url = { version = "2.1", features = ["serde"] }
-clap = { version = "3.1.18", features = ["derive"] }
-tinytemplate = "1.2"
-cookie = "= 0.12"
-rand = { version = "0.8", features = ["min_const_gen"] }
-sha-1 = "0.10.0"
+base64 = "0.22"
+clap = { version = "4", features = ["derive", "env"] }
+rand = "0.9"
 sha2 = "0.10.0"
-anyhow = "1.0.95"
-sqlx = { version = "0.8.3", features = ["runtime-tokio", "tls-native-tls", "postgres", "derive", "chrono"] }
-chrono = { version = "0.4.39", features = ["serde"] }
-uuid = { version = "1.12.1", features = ["serde", "v4", "v7"] }
-tower-http = { version = "0.6.2", features = ["timeout", "trace"] }
+anyhow = "1.0"
+thiserror = "2"
+jsonwebtoken = "9"
+argon2 = "0.5"
+sqlx = { version = "0.8.3", features = ["runtime-tokio", "tls-native-tls", "postgres", "derive", "chrono", "uuid"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["serde", "v4", "v7"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["timeout", "trace", "cors"] }
 axum = { version = "0.8.1", features = ["tracing"] }
+
+[dev-dependencies]
+http-body-util = "0.1"

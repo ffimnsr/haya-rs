@@ -1,63 +1,43 @@
 use std::time::Duration;
 
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
-use sqlx::PgPool;
+use tower_http::cors::CorsLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use super::handler;
+use crate::state::AppState;
 
-// async fn add_request_id(req: Request<Body>) -> ApiResult<Request<Body>> {
-//     req.set_context(Uuid::new_v4());
-//     Ok(req)
-// }
-
-// async fn logger(
-//     res: Response<Body>,
-//     req_info: RequestInfo,
-// ) -> ApiResult<Response<Body>> {
-//     let request_id = req_info
-//         .context::<Uuid>()
-//         .ok_or_else(|| ApiError::BadRequest("Unable to get request id".into()))?;
-//     log::info!(
-//         "[request-id:{}] {} {} {}",
-//         request_id,
-//         res.status().as_u16(),
-//         req_info.method(),
-//         req_info.uri().path()
-//     );
-//     Ok(res)
-// }
-
-// async fn set_request_id_header(
-//     mut res: Response<Body>,
-//     req_info: RequestInfo,
-// ) -> ApiResult<Response<Body>> {
-//     let request_id = req_info
-//         .context::<Uuid>()
-//         .ok_or_else(|| ApiError::BadRequest("Unable to get request id".into()))
-//         .map(|c| c.to_string())?;
-//     let value = HeaderValue::from_str(request_id.as_str()).unwrap();
-//     res.headers_mut().append("x-request-id", value);
-//     Ok(res)
-// }
-
-pub fn create_router(
-    db: PgPool,
-) -> anyhow::Result<Router> {
-
-    let router = Router::new()
-        .route("/", get(handler::index))
+pub fn create_router(state: AppState) -> Router {
+    Router::new()
+        .route("/health", get(handler::health::health_check))
+        .route("/settings", get(handler::settings::get_settings))
+        .route("/signup", post(handler::signup::signup))
+        .route("/token", post(handler::token::token))
+        .route("/verify", post(handler::verify::verify))
+        .route("/recover", post(handler::recover::recover))
+        .route("/resend", post(handler::resend::resend))
+        .route("/magiclink", post(handler::otp::magiclink))
+        .route("/otp", post(handler::otp::send_otp))
+        .route("/logout", post(handler::logout::logout))
+        .route(
+            "/user",
+            get(handler::user::get_user).put(handler::user::update_user),
+        )
+        .route(
+            "/admin/users",
+            get(handler::admin::admin_list_users).post(handler::admin::admin_create_user),
+        )
+        .route(
+            "/admin/users/:id",
+            get(handler::admin::admin_get_user)
+                .put(handler::admin::admin_update_user)
+                .delete(handler::admin::admin_delete_user),
+        )
         .fallback(handler::not_found)
-        .with_state(db)
-        .layer((
-          TraceLayer::new_for_http(),
-
-          // Graceful shutdown will wait for outstanding requests to complete.
-          // Added a timeout to ensure requests are not waiting indefinitely.
-          TimeoutLayer::new(Duration::from_secs(10)),
-        ));
-
-    Ok(router)
+        .with_state(state)
+        .layer(CorsLayer::permissive())
+        .layer(TraceLayer::new_for_http())
+        .layer(TimeoutLayer::new(Duration::from_secs(30)))
 }
