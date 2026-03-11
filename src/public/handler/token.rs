@@ -124,7 +124,7 @@ async fn handle_password_grant(
         &state.issuer,
     )?;
 
-    let expires_at = Utc::now().timestamp() + state.jwt_exp;
+    let expires_at = now.timestamp() + state.jwt_exp;
     Ok(Json(TokenResponse {
         access_token,
         token_type: "bearer".to_string(),
@@ -225,7 +225,7 @@ async fn handle_refresh_grant(
         &state.issuer,
     )?;
 
-    let expires_at = Utc::now().timestamp() + state.jwt_exp;
+    let expires_at = now.timestamp() + state.jwt_exp;
     Ok(Json(TokenResponse {
         access_token,
         token_type: "bearer".to_string(),

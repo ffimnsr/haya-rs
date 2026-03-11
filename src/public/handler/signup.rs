@@ -23,7 +23,7 @@ pub async fn signup(
     Json(req): Json<SignupRequest>,
 ) -> Result<Json<UserResponse>> {
     if let Some(ref email) = req.email {
-        if !email.contains('@') {
+        if !is_valid_email(email) {
             return Err(AuthError::ValidationFailed("Invalid email format".to_string()));
         }
     }
@@ -77,4 +77,15 @@ pub async fn signup(
     .await?;
 
     Ok(Json(UserResponse::from(user)))
+}
+
+fn is_valid_email(email: &str) -> bool {
+    // Basic but reasonable email validation: local@domain.tld
+    let parts: Vec<&str> = email.splitn(2, '@').collect();
+    if parts.len() != 2 {
+        return false;
+    }
+    let local = parts[0];
+    let domain = parts[1];
+    !local.is_empty() && domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
 }

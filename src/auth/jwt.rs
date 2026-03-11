@@ -74,6 +74,7 @@ pub fn encode_token(
 pub fn decode_token(token: &str, jwt_secret: &str) -> Result<TokenData<Claims>, AuthError> {
     let mut validation = Validation::new(Algorithm::HS256);
     validation.set_audience(&["authenticated"]);
+    validation.leeway = 0;
     decode::<Claims>(
         token,
         &DecodingKey::from_secret(jwt_secret.as_bytes()),
@@ -134,7 +135,7 @@ mod tests {
             serde_json::json!({}),
             serde_json::json!({}),
             secret,
-            -3700, // expired beyond the default 60s leeway
+            -10, // already expired
             "https://example.com",
         )
         .unwrap();
