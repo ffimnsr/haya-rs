@@ -13,6 +13,8 @@ use crate::{
 #[derive(Debug, Deserialize)]
 pub struct OtpRequest {
     pub email: Option<String>,
+    // Reserved for future phone OTP support
+    #[allow(dead_code)]
     pub phone: Option<String>,
     pub create_user: Option<bool>,
     pub data: Option<serde_json::Value>,

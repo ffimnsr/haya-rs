@@ -14,6 +14,8 @@ pub struct ResendRequest {
     #[serde(rename = "type")]
     pub resend_type: String,
     pub email: Option<String>,
+    // Reserved for future phone OTP resend support
+    #[allow(dead_code)]
     pub phone: Option<String>,
 }
 

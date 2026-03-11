@@ -1,11 +1,12 @@
-use axum::Json;
+use axum::{Json, extract::State};
 use serde_json::json;
 use crate::error::Result;
+use crate::state::AppState;
 
-pub async fn get_settings() -> Result<Json<serde_json::Value>> {
+pub async fn get_settings(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
     Ok(Json(json!({
         "disable_signup": false,
-        "mailer_autoconfirm": false,
+        "mailer_autoconfirm": state.mailer_autoconfirm,
         "phone_autoconfirm": false,
         "sms_provider": "",
         "mfa_enabled": false,

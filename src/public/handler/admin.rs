@@ -126,6 +126,22 @@ pub async fn admin_create_user(
     .fetch_one(&state.db)
     .await?;
 
+    // Apply ban_duration if provided
+    if let Some(ref ban_duration) = req.ban_duration {
+        if ban_duration != "none" {
+            let duration_secs = parse_ban_duration(ban_duration)?;
+            let banned_until = now + chrono::Duration::seconds(duration_secs);
+            sqlx::query(
+                "UPDATE auth.users SET banned_until = $1, updated_at = $2 WHERE id = $3"
+            )
+            .bind(banned_until)
+            .bind(now)
+            .bind(user_id)
+            .execute(&state.db)
+            .await?;
+        }
+    }
+
     Ok(Json(UserResponse::from(user)))
 }
 
@@ -180,6 +196,24 @@ pub async fn admin_update_user(
     if let Some(ref role) = req.role {
         sqlx::query("UPDATE auth.users SET role = $1, updated_at = $2 WHERE id = $3")
             .bind(role)
+            .bind(now)
+            .bind(user_id)
+            .execute(&state.db)
+            .await?;
+    }
+
+    if let Some(ref email) = req.email {
+        sqlx::query("UPDATE auth.users SET email = $1, updated_at = $2 WHERE id = $3")
+            .bind(email)
+            .bind(now)
+            .bind(user_id)
+            .execute(&state.db)
+            .await?;
+    }
+
+    if let Some(ref phone) = req.phone {
+        sqlx::query("UPDATE auth.users SET phone = $1, updated_at = $2 WHERE id = $3")
+            .bind(phone)
             .bind(now)
             .bind(user_id)
             .execute(&state.db)
@@ -288,5 +322,37 @@ fn parse_ban_duration(duration: &str) -> Result<i64, AuthError> {
             "Invalid ban duration format: {}. Use format like '24h', '7d', or '30m'.",
             duration
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_ban_duration_hours() {
+        assert_eq!(parse_ban_duration("1h").unwrap(), 3600);
+        assert_eq!(parse_ban_duration("24h").unwrap(), 86400);
+        assert_eq!(parse_ban_duration("0h").unwrap(), 0);
+    }
+
+    #[test]
+    fn test_parse_ban_duration_days() {
+        assert_eq!(parse_ban_duration("1d").unwrap(), 86400);
+        assert_eq!(parse_ban_duration("7d").unwrap(), 604800);
+    }
+
+    #[test]
+    fn test_parse_ban_duration_minutes() {
+        assert_eq!(parse_ban_duration("30m").unwrap(), 1800);
+        assert_eq!(parse_ban_duration("60m").unwrap(), 3600);
+    }
+
+    #[test]
+    fn test_parse_ban_duration_invalid() {
+        assert!(parse_ban_duration("24x").is_err());
+        assert!(parse_ban_duration("invalid").is_err());
+        assert!(parse_ban_duration("").is_err());
+        assert!(parse_ban_duration("abch").is_err());
     }
 }

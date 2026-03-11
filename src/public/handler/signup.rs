@@ -79,7 +79,7 @@ pub async fn signup(
     Ok(Json(UserResponse::from(user)))
 }
 
-fn is_valid_email(email: &str) -> bool {
+pub fn is_valid_email(email: &str) -> bool {
     // Basic but reasonable email validation: local@domain.tld
     let parts: Vec<&str> = email.splitn(2, '@').collect();
     if parts.len() != 2 {
@@ -88,4 +88,28 @@ fn is_valid_email(email: &str) -> bool {
     let local = parts[0];
     let domain = parts[1];
     !local.is_empty() && domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_emails() {
+        assert!(is_valid_email("user@example.com"));
+        assert!(is_valid_email("user+tag@example.co.uk"));
+        assert!(is_valid_email("first.last@domain.org"));
+        assert!(is_valid_email("user@sub.domain.com"));
+    }
+
+    #[test]
+    fn test_invalid_emails() {
+        assert!(!is_valid_email("not-an-email"));
+        assert!(!is_valid_email("@nodomain.com"));
+        assert!(!is_valid_email("noatsign"));
+        assert!(!is_valid_email("user@.domain.com"));
+        assert!(!is_valid_email("user@domain."));
+        assert!(!is_valid_email("user@nodot"));
+        assert!(!is_valid_email(""));
+    }
 }

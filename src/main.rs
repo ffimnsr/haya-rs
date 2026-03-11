@@ -36,10 +36,32 @@ async fn main() -> anyhow::Result<()> {
 
     let db = db::init_pool(&db_url).await?;
 
-    let jwt_secret = env::var("JWT_SECRET").unwrap_or_else(|_| {
-        tracing::warn!("JWT_SECRET not set, using insecure default secret");
-        "super-secret-jwt-token-with-at-least-32-characters-long".to_string()
-    });
+    let jwt_secret = match env::var("JWT_SECRET") {
+        Ok(secret) if secret.len() >= 32 => secret,
+        Ok(secret) if secret.is_empty() => {
+            anyhow::bail!("JWT_SECRET must not be empty");
+        }
+        Ok(_) => {
+            anyhow::bail!("JWT_SECRET must be at least 32 characters long");
+        }
+        Err(_) => {
+            if env::var("HAYA_DEV_MODE").is_ok() {
+                let dev_secret = "super-secret-jwt-token-with-at-least-32-characters-long";
+                tracing::warn!(
+                    "⚠️  JWT_SECRET not set! Using insecure development secret. \
+                     Set HAYA_DEV_MODE= to suppress this warning. \
+                     NEVER use this configuration in production!"
+                );
+                dev_secret.to_string()
+            } else {
+                anyhow::bail!(
+                    "JWT_SECRET environment variable is required. \
+                     Set a strong secret of at least 32 characters. \
+                     For development mode only, set HAYA_DEV_MODE=1 to use a default secret."
+                );
+            }
+        }
+    };
 
     let jwt_exp: i64 = env::var("JWT_EXPIRY")
         .ok()
@@ -61,6 +83,10 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|v| v.parse().ok())
         .unwrap_or_else(Uuid::new_v4);
 
+    let mailer_autoconfirm = env::var("MAILER_AUTOCONFIRM")
+        .map(|v| v.to_lowercase() == "true" || v == "1")
+        .unwrap_or(false);
+
     let state = AppState {
         db,
         jwt_secret,
@@ -69,6 +95,7 @@ async fn main() -> anyhow::Result<()> {
         site_url,
         issuer,
         instance_id,
+        mailer_autoconfirm,
     };
 
     let version = env!("CARGO_PKG_VERSION");

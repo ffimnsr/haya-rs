@@ -86,6 +86,8 @@ impl IntoResponse for AuthError {
     }
 }
 
+/// Generic error wrapper for anyhow errors - kept for extensibility.
+#[allow(dead_code)]
 pub struct AppError(anyhow::Error);
 
 impl IntoResponse for AppError {
@@ -104,5 +106,62 @@ where
 {
     fn from(value: E) -> Self {
         Self(value.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_error_codes() {
+        assert_eq!(AuthError::InvalidCredentials.error_code(), "invalid_credentials");
+        assert_eq!(AuthError::EmailNotConfirmed.error_code(), "email_not_confirmed");
+        assert_eq!(AuthError::UserAlreadyExists.error_code(), "user_already_exists");
+        assert_eq!(
+            AuthError::ValidationFailed("bad input".into()).error_code(),
+            "validation_failed"
+        );
+        assert_eq!(AuthError::UserNotFound.error_code(), "user_not_found");
+        assert_eq!(AuthError::SessionNotFound.error_code(), "session_not_found");
+        assert_eq!(AuthError::InvalidToken.error_code(), "bad_jwt");
+        assert_eq!(AuthError::TokenExpired.error_code(), "bad_jwt");
+        assert_eq!(AuthError::NotAuthorized.error_code(), "no_authorization");
+        assert_eq!(AuthError::NotAdmin.error_code(), "not_admin");
+        assert_eq!(AuthError::UserBanned.error_code(), "user_banned");
+        assert_eq!(AuthError::InternalError("oops".into()).error_code(), "unexpected_failure");
+    }
+
+    #[test]
+    fn test_status_codes() {
+        assert_eq!(AuthError::InvalidCredentials.status_code(), StatusCode::BAD_REQUEST);
+        assert_eq!(AuthError::EmailNotConfirmed.status_code(), StatusCode::UNAUTHORIZED);
+        assert_eq!(AuthError::UserAlreadyExists.status_code(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            AuthError::ValidationFailed("".into()).status_code(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert_eq!(AuthError::UserNotFound.status_code(), StatusCode::NOT_FOUND);
+        assert_eq!(AuthError::SessionNotFound.status_code(), StatusCode::NOT_FOUND);
+        assert_eq!(AuthError::InvalidToken.status_code(), StatusCode::UNAUTHORIZED);
+        assert_eq!(AuthError::TokenExpired.status_code(), StatusCode::UNAUTHORIZED);
+        assert_eq!(AuthError::NotAuthorized.status_code(), StatusCode::UNAUTHORIZED);
+        assert_eq!(AuthError::NotAdmin.status_code(), StatusCode::FORBIDDEN);
+        assert_eq!(AuthError::UserBanned.status_code(), StatusCode::FORBIDDEN);
+        assert_eq!(AuthError::InternalError("".into()).status_code(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_error_display() {
+        assert_eq!(AuthError::InvalidCredentials.to_string(), "Invalid credentials");
+        assert_eq!(AuthError::UserAlreadyExists.to_string(), "User already exists");
+        assert_eq!(
+            AuthError::ValidationFailed("Password too short".into()).to_string(),
+            "Validation failed: Password too short"
+        );
+        assert_eq!(
+            AuthError::InternalError("DB failure".into()).to_string(),
+            "Internal error: DB failure"
+        );
     }
 }

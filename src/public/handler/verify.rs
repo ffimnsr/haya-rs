@@ -17,6 +17,8 @@ pub struct VerifyRequest {
     #[serde(rename = "type")]
     pub verify_type: String,
     pub token: String,
+    // Used for additional verification in some flows
+    #[allow(dead_code)]
     pub email: Option<String>,
 }
 
@@ -63,14 +65,13 @@ async fn handle_signup_verify(
     .execute(&state.db)
     .await?;
 
-    let updated_user: User = sqlx::query_as::<_, User>(
-        "SELECT id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_anonymous, banned_until, created_at, updated_at FROM auth.users WHERE id = $1"
-    )
-    .bind(user.id)
-    .fetch_one(&state.db)
-    .await?;
+    // Build updated user response directly without extra query
+    let mut user_response = UserResponse::from(user);
+    user_response.email_confirmed_at = Some(now);
+    user_response.confirmed_at = Some(now);
+    user_response.updated_at = Some(now);
 
-    Ok(Json(VerifyResponse::User(UserResponse::from(updated_user))))
+    Ok(Json(VerifyResponse::User(user_response)))
 }
 
 async fn handle_recovery_verify(
