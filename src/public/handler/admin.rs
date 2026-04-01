@@ -27,8 +27,8 @@ pub async fn admin_list_users(
     Query(query): Query<PaginationQuery>,
     AdminUser(_claims): AdminUser,
 ) -> Result<Json<serde_json::Value>> {
-    let page = query.page.unwrap_or(1);
-    let per_page = query.per_page.unwrap_or(50);
+    let page = query.page.unwrap_or(1).max(1);
+    let per_page = query.per_page.unwrap_or(50).min(100).max(1);
     let offset = (page - 1) * per_page;
 
     let users: Vec<User> = sqlx::query_as::<_, User>(
@@ -182,6 +182,16 @@ pub async fn admin_update_user(
     let now = Utc::now();
 
     if let Some(ref pw) = req.password {
+        if pw.len() < 6 {
+            return Err(AuthError::ValidationFailed(
+                "Password must be at least 6 characters.".to_string(),
+            ));
+        }
+        if pw.len() > 128 {
+            return Err(AuthError::ValidationFailed(
+                "Password must not exceed 128 characters.".to_string(),
+            ));
+        }
         let hashed = password::hash_password(pw)?;
         sqlx::query(
             "UPDATE auth.users SET encrypted_password = $1, updated_at = $2 WHERE id = $3"

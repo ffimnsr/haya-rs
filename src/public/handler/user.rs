@@ -57,6 +57,11 @@ pub async fn update_user(
                 "Password must be at least 6 characters.".to_string(),
             ));
         }
+        if pw.len() > 128 {
+            return Err(AuthError::ValidationFailed(
+                "Password must not exceed 128 characters.".to_string(),
+            ));
+        }
         let hashed = password::hash_password(pw)?;
         sqlx::query(
             "UPDATE auth.users SET encrypted_password = $1, updated_at = $2 WHERE id = $3"
@@ -107,12 +112,15 @@ pub async fn update_user(
     }
 
     if let Some(ref phone) = req.phone {
-        sqlx::query("UPDATE auth.users SET phone = $1, updated_at = $2 WHERE id = $3")
-            .bind(phone)
-            .bind(now)
-            .bind(user_id)
-            .execute(&state.db)
-            .await?;
+        // Clear phone_confirmed_at since the phone number has changed (requires re-verification)
+        sqlx::query(
+            "UPDATE auth.users SET phone = $1, phone_confirmed_at = NULL, updated_at = $2 WHERE id = $3"
+        )
+        .bind(phone)
+        .bind(now)
+        .bind(user_id)
+        .execute(&state.db)
+        .await?;
     }
 
     let user: User = sqlx::query_as::<_, User>(

@@ -48,7 +48,7 @@ async fn handle_signup_verify(
     req: VerifyRequest,
 ) -> Result<Json<VerifyResponse>> {
     let user: User = sqlx::query_as::<_, User>(
-        "SELECT id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_anonymous, banned_until, created_at, updated_at FROM auth.users WHERE confirmation_token = $1"
+        "SELECT id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_anonymous, banned_until, created_at, updated_at FROM auth.users WHERE confirmation_token = $1 AND confirmation_sent_at > NOW() - INTERVAL '24 hours'"
     )
     .bind(&req.token)
     .fetch_optional(&state.db)
@@ -79,12 +79,19 @@ async fn handle_recovery_verify(
     req: VerifyRequest,
 ) -> Result<Json<VerifyResponse>> {
     let user: User = sqlx::query_as::<_, User>(
-        "SELECT id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_anonymous, banned_until, created_at, updated_at FROM auth.users WHERE recovery_token = $1"
+        "SELECT id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_anonymous, banned_until, created_at, updated_at FROM auth.users WHERE recovery_token = $1 AND recovery_sent_at > NOW() - INTERVAL '1 hour'"
     )
     .bind(&req.token)
     .fetch_optional(&state.db)
     .await?
     .ok_or(AuthError::InvalidToken)?;
+
+    // Reject banned users before granting a new session
+    if let Some(banned_until) = user.banned_until {
+        if banned_until > Utc::now() {
+            return Err(AuthError::UserBanned);
+        }
+    }
 
     let now = Utc::now();
     sqlx::query(

@@ -39,7 +39,7 @@ pub enum AuthError {
 impl AuthError {
     fn status_code(&self) -> StatusCode {
         match self {
-            AuthError::InvalidCredentials => StatusCode::BAD_REQUEST,
+            AuthError::InvalidCredentials => StatusCode::UNAUTHORIZED,
             AuthError::EmailNotConfirmed => StatusCode::UNAUTHORIZED,
             AuthError::UserAlreadyExists => StatusCode::UNPROCESSABLE_ENTITY,
             AuthError::ValidationFailed(_) => StatusCode::UNPROCESSABLE_ENTITY,
@@ -77,10 +77,23 @@ impl AuthError {
 impl IntoResponse for AuthError {
     fn into_response(self) -> Response {
         let status = self.status_code();
+        // Never send internal implementation details or SQL errors to clients.
+        // Log them server-side instead.
+        let msg = match &self {
+            AuthError::DatabaseError(e) => {
+                tracing::error!("Database error: {e}");
+                "An unexpected error occurred".to_string()
+            }
+            AuthError::InternalError(e) => {
+                tracing::error!("Internal error: {e}");
+                "An unexpected error occurred".to_string()
+            }
+            _ => self.to_string(),
+        };
         let body = json!({
             "code": status.as_u16(),
             "error_code": self.error_code(),
-            "msg": self.to_string(),
+            "msg": msg,
         });
         (status, Json(body)).into_response()
     }

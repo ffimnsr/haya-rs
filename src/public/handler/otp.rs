@@ -6,7 +6,8 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::{
-    error::Result,
+    error::{AuthError, Result},
+    public::handler::signup::is_valid_email,
     state::AppState,
 };
 
@@ -30,6 +31,9 @@ pub async fn send_otp(
     Json(req): Json<OtpRequest>,
 ) -> Result<Json<serde_json::Value>> {
     if let Some(ref email) = req.email {
+        if !is_valid_email(email) {
+            return Err(AuthError::ValidationFailed("Invalid email format".to_string()));
+        }
         let create_user = req.create_user.unwrap_or(true);
 
         let existing: Option<(Uuid,)> = sqlx::query_as::<_, (Uuid,)>(
@@ -81,10 +85,8 @@ pub async fn send_otp(
         .execute(&state.db)
         .await?;
 
-        tracing::info!(
-            "OTP for {}: {} (in production, send via email)",
-            email, token
-        );
+        // TODO: send token to email via your mailer
+        tracing::info!(email = %email, "OTP token generated");
     }
 
     Ok(Json(serde_json::json!({})))

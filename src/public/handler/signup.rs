@@ -22,6 +22,12 @@ pub async fn signup(
     State(state): State<AppState>,
     Json(req): Json<SignupRequest>,
 ) -> Result<Json<UserResponse>> {
+    if req.email.is_none() {
+        return Err(AuthError::ValidationFailed(
+            "Email is required.".to_string(),
+        ));
+    }
+
     if let Some(ref email) = req.email {
         if !is_valid_email(email) {
             return Err(AuthError::ValidationFailed("Invalid email format".to_string()));
@@ -31,6 +37,11 @@ pub async fn signup(
         if password.len() < 6 {
             return Err(AuthError::ValidationFailed(
                 "Password must be at least 6 characters.".to_string(),
+            ));
+        }
+        if password.len() > 128 {
+            return Err(AuthError::ValidationFailed(
+                "Password must not exceed 128 characters.".to_string(),
             ));
         }
     }

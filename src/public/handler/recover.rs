@@ -6,6 +6,7 @@ use serde::Deserialize;
 
 use crate::{
     error::Result,
+    public::handler::signup::is_valid_email,
     state::AppState,
 };
 
@@ -18,6 +19,11 @@ pub async fn recover(
     State(state): State<AppState>,
     Json(req): Json<RecoverRequest>,
 ) -> Result<Json<serde_json::Value>> {
+    if !is_valid_email(&req.email) {
+        // Return 200 to avoid leaking which emails are valid
+        return Ok(Json(serde_json::json!({})));
+    }
+
     let user_exists: Option<(uuid::Uuid,)> = sqlx::query_as::<_, (uuid::Uuid,)>(
         "SELECT id FROM auth.users WHERE email = $1"
     )
@@ -47,10 +53,8 @@ pub async fn recover(
     .execute(&state.db)
     .await?;
 
-    tracing::info!(
-        "Recovery token for {}: {} (in production, send via email)",
-        req.email, recovery_token
-    );
+    // TODO: send recovery_token to req.email via your mailer
+    tracing::info!(email = %req.email, "Password recovery email requested");
 
     Ok(Json(serde_json::json!({})))
 }

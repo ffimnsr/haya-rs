@@ -6,6 +6,7 @@ use serde::Deserialize;
 
 use crate::{
     error::{AuthError, Result},
+    public::handler::signup::is_valid_email,
     state::AppState,
 };
 
@@ -27,6 +28,10 @@ pub async fn resend(
         .email
         .as_deref()
         .ok_or_else(|| AuthError::ValidationFailed("email is required".to_string()))?;
+
+    if !is_valid_email(email) {
+        return Err(AuthError::ValidationFailed("Invalid email format".to_string()));
+    }
 
     let user_id: Option<(uuid::Uuid,)> = sqlx::query_as::<_, (uuid::Uuid,)>(
         "SELECT id FROM auth.users WHERE email = $1"
@@ -56,7 +61,8 @@ pub async fn resend(
             .bind(user_id)
             .execute(&state.db)
             .await?;
-            tracing::info!("Signup token for {}: {}", email, token);
+            // TODO: send token to email via your mailer
+            tracing::info!(email = %email, "Signup confirmation token regenerated");
         }
         "recovery" => {
             sqlx::query(
@@ -68,7 +74,8 @@ pub async fn resend(
             .bind(user_id)
             .execute(&state.db)
             .await?;
-            tracing::info!("Recovery token for {}: {}", email, token);
+            // TODO: send token to email via your mailer
+            tracing::info!(email = %email, "Recovery token regenerated");
         }
         _ => {
             return Err(AuthError::ValidationFailed(format!(

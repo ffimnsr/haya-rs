@@ -182,15 +182,26 @@ async fn handle_refresh_grant(
     .await?
     .ok_or(AuthError::UserNotFound)?;
 
+    // Reject banned users before issuing a new token
+    if let Some(banned_until) = user.banned_until {
+        if banned_until > Utc::now() {
+            return Err(AuthError::UserBanned);
+        }
+    }
+
     let now = Utc::now();
+
+    // Perform token rotation atomically: revoke old, insert new, update session.
+    // Without a transaction a crash between these writes would lock the user out.
+    let new_refresh_token = generate_refresh_token();
+    let mut tx = state.db.begin().await?;
 
     sqlx::query("UPDATE auth.refresh_tokens SET revoked = true, updated_at = $1 WHERE id = $2")
         .bind(now)
         .bind(rt.id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
 
-    let new_refresh_token = generate_refresh_token();
     sqlx::query(
         "INSERT INTO auth.refresh_tokens (instance_id, user_id, token, session_id, revoked, parent, created_at, updated_at) VALUES ($1, $2, $3, $4, false, $5, $6, $7)"
     )
@@ -201,7 +212,7 @@ async fn handle_refresh_grant(
     .bind(rt_str)
     .bind(now)
     .bind(now)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
 
     sqlx::query("UPDATE auth.sessions SET refreshed_at = $1, updated_at = $2 WHERE id = $3")
@@ -209,8 +220,10 @@ async fn handle_refresh_grant(
         .bind(now.naive_utc())
         .bind(now)
         .bind(session_id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
+
+    tx.commit().await?;
 
     let app_meta = user.raw_app_meta_data.clone().unwrap_or(serde_json::json!({}));
     let user_meta = user.raw_user_meta_data.clone().unwrap_or(serde_json::json!({}));
