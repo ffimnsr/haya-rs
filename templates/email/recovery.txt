@@ -1,0 +1,9 @@
+Reset your password for {{site_name}}
+
+We received a request to reset the password for {{email}}.
+
+Click the link below to reset your password (expires in 1 hour):
+
+{{recovery_url}}
+
+If you didn't request a password reset, you can safely ignore this email.

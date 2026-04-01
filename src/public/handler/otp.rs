@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 use crate::{
     error::{AuthError, Result},
+    mailer::EmailKind,
     public::handler::signup::is_valid_email,
     state::AppState,
 };
@@ -85,8 +86,27 @@ pub async fn send_otp(
         .execute(&state.db)
         .await?;
 
-        // TODO: send token to email via your mailer
-        tracing::info!(email = %email, "OTP token generated");
+        // Send magic-link / OTP email.
+        let magic_link_url = format!("{}/verify?token={}&type=magiclink", state.site_url, token);
+        if let Some(ref mailer) = state.mailer {
+            if let Err(e) = mailer
+                .send(
+                    EmailKind::MagicLink,
+                    email,
+                    &[
+                        ("site_name", state.site_name.as_str()),
+                        ("magic_link_url", magic_link_url.as_str()),
+                        ("email", email),
+                    ],
+                )
+                .await
+            {
+                tracing::error!(error = %e, %email, "Failed to send magic link email");
+            }
+        } else {
+            tracing::warn!(%email, "SMTP not configured; magic link email not sent");
+        }
+        tracing::info!(%email, "OTP/magic link token generated");
     }
 
     Ok(Json(serde_json::json!({})))

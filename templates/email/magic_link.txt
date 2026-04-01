@@ -1,0 +1,7 @@
+Sign in to {{site_name}}
+
+Click the link below to sign in to your account (this link can only be used once):
+
+{{magic_link_url}}
+
+This link expires in 24 hours. If you didn't request this, you can safely ignore this email.

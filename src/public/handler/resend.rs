@@ -6,6 +6,7 @@ use serde::Deserialize;
 
 use crate::{
     error::{AuthError, Result},
+    mailer::EmailKind,
     public::handler::signup::is_valid_email,
     state::AppState,
 };
@@ -61,8 +62,27 @@ pub async fn resend(
             .bind(user_id)
             .execute(&state.db)
             .await?;
-            // TODO: send token to email via your mailer
-            tracing::info!(email = %email, "Signup confirmation token regenerated");
+            let confirmation_url =
+                format!("{}/verify?token={}&type=signup", state.site_url, token);
+            if let Some(ref mailer) = state.mailer {
+                if let Err(e) = mailer
+                    .send(
+                        EmailKind::Confirmation,
+                        email,
+                        &[
+                            ("site_name", state.site_name.as_str()),
+                            ("confirmation_url", confirmation_url.as_str()),
+                            ("email", email),
+                        ],
+                    )
+                    .await
+                {
+                    tracing::error!(error = %e, %email, "Failed to resend confirmation email");
+                }
+            } else {
+                tracing::warn!(%email, "SMTP not configured; confirmation email not sent");
+            }
+            tracing::info!(%email, "Signup confirmation token regenerated");
         }
         "recovery" => {
             sqlx::query(
@@ -74,8 +94,27 @@ pub async fn resend(
             .bind(user_id)
             .execute(&state.db)
             .await?;
-            // TODO: send token to email via your mailer
-            tracing::info!(email = %email, "Recovery token regenerated");
+            let recovery_url =
+                format!("{}/verify?token={}&type=recovery", state.site_url, token);
+            if let Some(ref mailer) = state.mailer {
+                if let Err(e) = mailer
+                    .send(
+                        EmailKind::Recovery,
+                        email,
+                        &[
+                            ("site_name", state.site_name.as_str()),
+                            ("recovery_url", recovery_url.as_str()),
+                            ("email", email),
+                        ],
+                    )
+                    .await
+                {
+                    tracing::error!(error = %e, %email, "Failed to resend recovery email");
+                }
+            } else {
+                tracing::warn!(%email, "SMTP not configured; recovery email not sent");
+            }
+            tracing::info!(%email, "Recovery token regenerated");
         }
         _ => {
             return Err(AuthError::ValidationFailed(format!(

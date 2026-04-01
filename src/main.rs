@@ -2,6 +2,7 @@ mod auth;
 mod db;
 mod defaults;
 mod error;
+mod mailer;
 mod middleware;
 mod mime;
 mod model;
@@ -9,9 +10,12 @@ mod public;
 mod state;
 mod utils;
 
-use crate::defaults::DEFAULT_DATABASE_URL;
-use crate::state::AppState;
 use std::env;
+use std::sync::Arc;
+
+use crate::defaults::DEFAULT_DATABASE_URL;
+use crate::mailer::{Mailer, MailerConfig};
+use crate::state::AppState;
 use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _};
 use uuid::Uuid;
 
@@ -74,6 +78,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(1_209_600);
 
     let site_url = env::var("SITE_URL").unwrap_or_else(|_| "http://localhost:9999".to_string());
+    let site_name = env::var("SITE_NAME").unwrap_or_else(|_| "Haya".to_string());
     let issuer = env::var("GOTRUE_JWT_ISSUER")
         .or_else(|_| env::var("JWT_ISSUER"))
         .unwrap_or_else(|_| site_url.clone());
@@ -87,15 +92,58 @@ async fn main() -> anyhow::Result<()> {
         .map(|v| v.to_lowercase() == "true" || v == "1")
         .unwrap_or(false);
 
+    let mailer: Option<Arc<Mailer>> = if let Ok(smtp_host) = env::var("SMTP_HOST") {
+        let smtp_port: u16 = env::var("SMTP_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(587);
+        let smtp_username = env::var("SMTP_USERNAME").unwrap_or_default();
+        let smtp_password = env::var("SMTP_PASSWORD").unwrap_or_default();
+        let smtp_tls = env::var("SMTP_TLS")
+            .map(|v| v.to_lowercase() != "false" && v != "0")
+            .unwrap_or(true);
+        let smtp_from_email = env::var("SMTP_FROM_EMAIL")
+            .unwrap_or_else(|_| "noreply@example.com".to_string());
+        let smtp_from_name =
+            env::var("SMTP_FROM_NAME").unwrap_or_else(|_| site_name.clone());
+        let templates_dir = env::var("EMAIL_TEMPLATES_DIR")
+            .unwrap_or_else(|_| "./templates/email".to_string());
+        tracing::info!(%smtp_host, smtp_port, "Configuring SMTP mailer");
+        match Mailer::new(MailerConfig {
+            from_email: smtp_from_email,
+            from_name: smtp_from_name,
+            smtp_host,
+            smtp_port,
+            smtp_username,
+            smtp_password,
+            smtp_tls,
+            templates_dir,
+        }) {
+            Ok(m) => {
+                tracing::info!("SMTP mailer ready");
+                Some(Arc::new(m))
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to configure SMTP mailer; emails will not be sent");
+                None
+            }
+        }
+    } else {
+        tracing::info!("SMTP_HOST not set; email sending is disabled");
+        None
+    };
+
     let state = AppState {
         db,
         jwt_secret,
         jwt_exp,
         refresh_token_exp,
         site_url,
+        site_name,
         issuer,
         instance_id,
         mailer_autoconfirm,
+        mailer,
     };
 
     let version = env!("CARGO_PKG_VERSION");

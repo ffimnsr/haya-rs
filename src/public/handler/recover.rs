@@ -6,6 +6,7 @@ use serde::Deserialize;
 
 use crate::{
     error::Result,
+    mailer::EmailKind,
     public::handler::signup::is_valid_email,
     state::AppState,
 };
@@ -53,7 +54,25 @@ pub async fn recover(
     .execute(&state.db)
     .await?;
 
-    // TODO: send recovery_token to req.email via your mailer
+    let recovery_url = format!("{}/verify?token={}&type=recovery", state.site_url, recovery_token);
+    if let Some(ref mailer) = state.mailer {
+        if let Err(e) = mailer
+            .send(
+                EmailKind::Recovery,
+                &req.email,
+                &[
+                    ("site_name", state.site_name.as_str()),
+                    ("recovery_url", recovery_url.as_str()),
+                    ("email", req.email.as_str()),
+                ],
+            )
+            .await
+        {
+            tracing::error!(error = %e, email = %req.email, "Failed to send recovery email");
+        }
+    } else {
+        tracing::warn!(email = %req.email, "SMTP not configured; recovery email not sent");
+    }
     tracing::info!(email = %req.email, "Password recovery email requested");
 
     Ok(Json(serde_json::json!({})))
