@@ -1,0 +1,23 @@
+services:
+  db:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: mysecretpassword
+      POSTGRES_DB: haya
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Run migrations automatically on first start
+      - ./migrations:/docker-entrypoint-initdb.d/migrations:ro,z
+      - ./contrib/docker/init-db.sh:/docker-entrypoint-initdb.d/00-init-db.sh:z
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d haya"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:

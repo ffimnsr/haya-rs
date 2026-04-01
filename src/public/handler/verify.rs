@@ -97,7 +97,7 @@ async fn handle_recovery_verify(
 
     let session_id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO auth.sessions (id, user_id, aal, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)"
+        "INSERT INTO auth.sessions (id, user_id, aal, created_at, updated_at) VALUES ($1, $2, $3::auth.aal_level, $4, $5)"
     )
     .bind(session_id)
     .bind(user.id)

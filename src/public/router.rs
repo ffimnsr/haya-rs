@@ -66,7 +66,7 @@ pub fn create_router(state: AppState) -> Router {
             get(handler::admin::admin_list_users).post(handler::admin::admin_create_user),
         )
         .route(
-            "/admin/users/:id",
+            "/admin/users/{id}",
             get(handler::admin::admin_get_user)
                 .put(handler::admin::admin_update_user)
                 .delete(handler::admin::admin_delete_user),
