@@ -14,6 +14,7 @@ const BASE_URL = (import.meta.env.VITE_HAYA_URL as string | undefined) ?? '/auth
 
 export interface User {
   id: string
+  instance_id?: string
   aud: string
   role: string
   email?: string
@@ -24,6 +25,11 @@ export interface User {
   last_sign_in_at?: string
   app_metadata: Record<string, unknown>
   user_metadata: Record<string, unknown>
+  identities: Record<string, unknown>[]
+  is_super_admin: boolean
+  is_sso_user: boolean
+  banned_until?: string
+  deleted_at?: string
   created_at?: string
   updated_at?: string
   is_anonymous: boolean

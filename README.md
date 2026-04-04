@@ -21,7 +21,7 @@ The repository currently exposes a focused set of auth and admin endpoints over 
 
 ### 2. Create the database schema
 
-Haya does not run migrations automatically on startup. Apply the SQL in [migrations/1732763425725_create_role_auth.sql](migrations/1732763425725_create_role_auth.sql) against your PostgreSQL instance before starting the server.
+Haya does not run migrations automatically on startup. Apply the base schema in [migrations/202411280001_create_role_auth.sql](migrations/202411280001_create_role_auth.sql) and every newer migration in `migrations/` against your PostgreSQL instance before starting the server.
 
 ### 3. Configure environment variables
 
@@ -38,6 +38,7 @@ Useful optional variables:
 export PORT=9999
 export SITE_URL="http://localhost:9999"
 export JWT_EXPIRY=3600
+export MFA_ENCRYPTION_KEY="replace-this-with-a-separate-secret"
 export REFRESH_TOKEN_EXPIRY=1209600
 export CORS_ALLOWED_ORIGINS="http://localhost:3000"
 export MAILER_AUTOCONFIRM=false
@@ -46,6 +47,7 @@ export MAILER_AUTOCONFIRM=false
 Notes:
 
 - `JWT_SECRET` is required in normal operation and must be at least 32 characters.
+- `MFA_ENCRYPTION_KEY` is recommended in production so TOTP secrets are encrypted with dedicated key material.
 - For local development only, you can set `HAYA_DEV_MODE=1` to allow an insecure built-in JWT secret.
 - If `GOTRUE_JWT_ISSUER` or `JWT_ISSUER` is not set, Haya uses `SITE_URL` as the issuer.
 
@@ -69,6 +71,8 @@ Public auth routes:
 
 - `GET /health`
 - `GET /settings`
+- `GET /authorize`
+- `GET /callback`
 - `POST /signup`
 - `POST /token`
 - `POST /verify`
@@ -76,6 +80,11 @@ Public auth routes:
 - `POST /resend`
 - `POST /magiclink`
 - `POST /otp`
+- `GET /factors`
+- `POST /factors`
+- `POST /factors/:id/verify`
+- `DELETE /factors/:id`
+- `POST /mfa/factors`
 - `POST /logout`
 - `GET /user`
 - `PUT /user`
@@ -103,11 +112,107 @@ Admin routes:
 - `GOTRUE_JWT_ISSUER`: preferred JWT issuer override.
 - `JWT_ISSUER`: fallback issuer override.
 - `JWT_EXPIRY`: access token lifetime in seconds. Defaults to `3600`.
+- `MFA_ENCRYPTION_KEY`: optional dedicated key material for encrypting stored TOTP secrets. When omitted, Haya derives the MFA encryption key from `JWT_SECRET`.
 - `REFRESH_TOKEN_EXPIRY`: refresh token lifetime in seconds. Defaults to `1209600`.
 - `INSTANCE_ID`: explicit UUID for the auth instance.
 - `MAILER_AUTOCONFIRM`: enables automatic confirmation when set to `true` or `1`.
-- `CORS_ALLOWED_ORIGINS`: comma-separated list of allowed origins. If omitted, CORS is permissive.
+- `CORS_ALLOWED_ORIGINS`: comma-separated list of allowed origins. Also used as the allowlist for OIDC `redirect_to` origins alongside `SITE_URL`. If omitted, CORS is permissive.
+- `HAYA_OIDC_PROVIDERS`: JSON array or object of OIDC provider configs. Each config includes `name`, `issuer`, `client_id`, `client_secret`, `redirect_uri`, optional `scopes`, optional `pkce`, and optional `allowed_email_domains`.
 - `HAYA_DEV_MODE`: enables an insecure built-in JWT secret for local development only.
+
+### OIDC SSO
+
+Haya can initiate a generic OIDC login flow for enterprise identity providers such as Keycloak, Okta, Entra ID, and Auth0.
+
+Example configuration:
+
+```bash
+export HAYA_OIDC_PROVIDERS='[
+  {
+    "name": "acme",
+    "issuer": "https://id.example.com/realms/acme",
+    "client_id": "haya",
+    "client_secret": "replace-me",
+    "redirect_uri": "http://localhost:9999/callback",
+    "scopes": ["openid", "email", "profile"],
+    "pkce": true,
+    "allowed_email_domains": ["example.com"]
+  }
+]'
+```
+
+Start the browser flow with:
+
+```bash
+curl -i "http://localhost:9999/authorize?provider=acme&redirect_to=http://localhost:3000/auth/callback"
+```
+
+`redirect_to` must stay on `SITE_URL` or one of the configured `CORS_ALLOWED_ORIGINS`.
+
+After a successful provider login, Haya creates or reuses the mapped identity, issues its normal session tokens, and redirects to `redirect_to` with the tokens in the URL fragment.
+
+If the user has a verified TOTP factor, Haya redirects with `mfa_required=true` and `mfa_token=<token>` in the fragment instead. The client then lists factors through `POST /mfa/factors` with the token in the JSON body or `Authorization` header and finishes MFA with `POST /token?grant_type=mfa_totp`.
+
+### TOTP MFA
+
+Haya now supports TOTP-based MFA for both password and OIDC sign-in. TOTP secrets are AES-GCM encrypted at rest, sessions move from `aal1` to `aal2` after successful verification, and AMR claims are stored in PostgreSQL and preserved across refresh token rotation.
+
+Enroll a factor from an authenticated session:
+
+```bash
+curl -X POST http://localhost:9999/factors \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"friendly_name":"Primary phone","issuer":"Haya"}'
+```
+
+The response includes a Base32 secret and an `otpauth://` URI you can load into an authenticator app.
+
+Verify the new factor:
+
+```bash
+curl -X POST http://localhost:9999/factors/<factor-id>/verify \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"code":"123456"}'
+```
+
+When a user with verified TOTP factors signs in through `POST /token?grant_type=password`, the response switches from a session payload to:
+
+```json
+{
+  "mfa_required": true,
+  "mfa_token": "pending-token",
+  "factors": [
+    {
+      "id": "factor-id",
+      "friendly_name": "Primary phone",
+      "factor_type": "totp",
+      "status": "verified",
+      "created_at": "2026-04-04T00:00:00Z",
+      "updated_at": "2026-04-04T00:00:00Z",
+      "last_challenged_at": null
+    }
+  ]
+}
+```
+
+Complete the second factor:
+
+```bash
+curl -X POST "http://localhost:9999/token?grant_type=mfa_totp" \
+  -H "Content-Type: application/json" \
+  -d '{"mfa_token":"pending-token","factor_id":"factor-id","code":"123456"}'
+```
+
+Delete a verified factor with an `aal2` session:
+
+```bash
+curl -X DELETE http://localhost:9999/factors/<factor-id> \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+Changing password, email, or phone through `PUT /user` now requires reauthentication. For password-based users, send `current_password`; if the account has MFA enabled, the session must also be `aal2`.
 
 ## Development
 

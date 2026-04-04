@@ -1,39 +1,25 @@
-use axum::{Json, extract::State};
-use serde_json::json;
+use axum::Json;
+use axum::extract::State;
+use serde_json::{
+  Map,
+  Value,
+};
+
 use crate::error::Result;
 use crate::state::AppState;
 
-pub async fn get_settings(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
-    Ok(Json(json!({
-        "disable_signup": false,
-        "mailer_autoconfirm": state.mailer_autoconfirm,
-        "phone_autoconfirm": false,
-        "sms_provider": "",
-        "mfa_enabled": false,
-        "saml_enabled": false,
-        "external": {
-            "apple": false,
-            "azure": false,
-            "bitbucket": false,
-            "discord": false,
-            "facebook": false,
-            "figma": false,
-            "fly": false,
-            "github": false,
-            "gitlab": false,
-            "google": false,
-            "kakao": false,
-            "keycloak": false,
-            "linkedin": false,
-            "notion": false,
-            "spotify": false,
-            "slack": false,
-            "twitch": false,
-            "twitter": false,
-            "workos": false,
-            "zoom": false,
-            "email": true,
-            "phone": false
-        }
-    })))
+pub async fn get_settings(State(state): State<AppState>) -> Result<Json<Value>> {
+  let mut external = Map::new();
+  external.insert("email".to_string(), Value::Bool(true));
+  for provider in crate::auth::oidc::provider_names(&state.oidc_providers) {
+    external.insert(provider, Value::Bool(true));
+  }
+
+  Ok(Json(serde_json::json!({
+    "mailer_autoconfirm": state.mailer_autoconfirm,
+    "external": Value::Object(external),
+    "mfa": {
+      "totp": true,
+    },
+  })))
 }

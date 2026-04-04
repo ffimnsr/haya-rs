@@ -20,16 +20,22 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.8.1", features = ["rt-multi-thread", "macros", "time", "signal"] }
 base64 = "0.22"
+base32 = "0.5"
 clap = { version = "4", features = ["derive", "env"] }
 rand = "0.9"
 sha2 = "0.10.0"
+sha1 = "0.10"
+hmac = "0.12"
 anyhow = "1.0"
 thiserror = "2"
 jsonwebtoken = "9"
 argon2 = "0.5"
+aes-gcm = "0.10"
 sqlx = { version = "0.8.3", features = ["runtime-tokio", "tls-native-tls", "postgres", "derive", "chrono", "uuid"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["serde", "v4", "v7"] }
+reqwest = { version = "0.12", features = ["json", "native-tls"] }
+url = "2"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["timeout", "trace", "cors"] }
 axum = { version = "0.8.1", features = ["tracing"] }

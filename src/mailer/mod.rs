@@ -24,10 +24,18 @@
 
 use std::path::Path;
 
+use lettre::message::{
+  Mailbox,
+  MultiPart,
+  SinglePart,
+  header,
+};
+use lettre::transport::smtp::authentication::Credentials;
 use lettre::{
-    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
-    message::{Mailbox, MultiPart, SinglePart, header},
-    transport::smtp::authentication::Credentials,
+  AsyncSmtpTransport,
+  AsyncTransport,
+  Message,
+  Tokio1Executor,
 };
 
 // ── Built-in default templates ───────────────────────────────────────────────
@@ -130,179 +138,172 @@ const DEFAULT_MAGIC_LINK_TXT: &str = "Sign in to {{site_name}}\n\nClick the link
 /// Identifies which email to send.  Each variant maps to a pair of template
 /// files (`{name}.html` / `{name}.txt`) under `EMAIL_TEMPLATES_DIR`.
 pub enum EmailKind {
-    /// Email-address confirmation sent after signup.
-    Confirmation,
-    /// Password-recovery link.
-    Recovery,
-    /// Passwordless magic-link for sign-in / OTP flows.
-    MagicLink,
+  /// Email-address confirmation sent after signup.
+  Confirmation,
+  /// Password-recovery link.
+  Recovery,
+  /// Passwordless magic-link for sign-in / OTP flows.
+  MagicLink,
 }
 
 impl EmailKind {
-    /// Base file name (without extension) used when looking up template files.
-    pub fn name(&self) -> &'static str {
-        match self {
-            Self::Confirmation => "confirm",
-            Self::Recovery => "recovery",
-            Self::MagicLink => "magic_link",
-        }
+  /// Base file name (without extension) used when looking up template files.
+  pub fn name(&self) -> &'static str {
+    match self {
+      Self::Confirmation => "confirm",
+      Self::Recovery => "recovery",
+      Self::MagicLink => "magic_link",
     }
+  }
 
-    /// Default `Subject:` header for this email type.
-    pub fn subject(&self) -> &'static str {
-        match self {
-            Self::Confirmation => "Confirm your email address",
-            Self::Recovery => "Reset your password",
-            Self::MagicLink => "Your magic link",
-        }
+  /// Default `Subject:` header for this email type.
+  pub fn subject(&self) -> &'static str {
+    match self {
+      Self::Confirmation => "Confirm your email address",
+      Self::Recovery => "Reset your password",
+      Self::MagicLink => "Your magic link",
     }
+  }
 
-    fn default_html(&self) -> &'static str {
-        match self {
-            Self::Confirmation => DEFAULT_CONFIRM_HTML,
-            Self::Recovery => DEFAULT_RECOVERY_HTML,
-            Self::MagicLink => DEFAULT_MAGIC_LINK_HTML,
-        }
+  fn default_html(&self) -> &'static str {
+    match self {
+      Self::Confirmation => DEFAULT_CONFIRM_HTML,
+      Self::Recovery => DEFAULT_RECOVERY_HTML,
+      Self::MagicLink => DEFAULT_MAGIC_LINK_HTML,
     }
+  }
 
-    fn default_text(&self) -> &'static str {
-        match self {
-            Self::Confirmation => DEFAULT_CONFIRM_TXT,
-            Self::Recovery => DEFAULT_RECOVERY_TXT,
-            Self::MagicLink => DEFAULT_MAGIC_LINK_TXT,
-        }
+  fn default_text(&self) -> &'static str {
+    match self {
+      Self::Confirmation => DEFAULT_CONFIRM_TXT,
+      Self::Recovery => DEFAULT_RECOVERY_TXT,
+      Self::MagicLink => DEFAULT_MAGIC_LINK_TXT,
     }
+  }
 }
 
 // ── Mailer config ────────────────────────────────────────────────────────────
 
 pub struct MailerConfig {
-    pub from_email: String,
-    pub from_name: String,
-    pub smtp_host: String,
-    pub smtp_port: u16,
-    pub smtp_username: String,
-    pub smtp_password: String,
-    /// `true` → STARTTLS (port 587); `false` → plain/no-TLS (e.g. MailHog on port 1025).
-    pub smtp_tls: bool,
-    /// Directory path checked for HTML/text template overrides at send time.
-    pub templates_dir: String,
+  pub from_email: String,
+  pub from_name: String,
+  pub smtp_host: String,
+  pub smtp_port: u16,
+  pub smtp_username: String,
+  pub smtp_password: String,
+  /// `true` → STARTTLS (port 587); `false` → plain/no-TLS (e.g. MailHog on port 1025).
+  pub smtp_tls: bool,
+  /// Directory path checked for HTML/text template overrides at send time.
+  pub templates_dir: String,
 }
 
 // ── Mailer ───────────────────────────────────────────────────────────────────
 
 pub struct Mailer {
-    transport: AsyncSmtpTransport<Tokio1Executor>,
-    config: MailerConfig,
+  transport: AsyncSmtpTransport<Tokio1Executor>,
+  config: MailerConfig,
 }
 
 impl std::fmt::Debug for Mailer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Mailer")
-            .field("smtp_host", &self.config.smtp_host)
-            .field("smtp_port", &self.config.smtp_port)
-            .finish_non_exhaustive()
-    }
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("Mailer")
+      .field("smtp_host", &self.config.smtp_host)
+      .field("smtp_port", &self.config.smtp_port)
+      .finish_non_exhaustive()
+  }
 }
 
 impl Mailer {
-    pub fn new(config: MailerConfig) -> anyhow::Result<Self> {
-        let transport = build_transport(&config)?;
-        Ok(Self { transport, config })
-    }
+  pub fn new(config: MailerConfig) -> anyhow::Result<Self> {
+    let transport = build_transport(&config)?;
+    Ok(Self { transport, config })
+  }
 
-    /// Load `{kind}.html` and `{kind}.txt` from `templates_dir`, falling back
-    /// to the built-in defaults when the files are absent.
-    fn load_template(&self, kind: &EmailKind) -> (String, String) {
-        let dir = Path::new(&self.config.templates_dir);
-        let name = kind.name();
-        let html = std::fs::read_to_string(dir.join(format!("{name}.html")))
-            .unwrap_or_else(|_| kind.default_html().to_string());
-        let text = std::fs::read_to_string(dir.join(format!("{name}.txt")))
-            .unwrap_or_else(|_| kind.default_text().to_string());
-        (html, text)
-    }
+  /// Load `{kind}.html` and `{kind}.txt` from `templates_dir`, falling back
+  /// to the built-in defaults when the files are absent.
+  fn load_template(&self, kind: &EmailKind) -> (String, String) {
+    let dir = Path::new(&self.config.templates_dir);
+    let name = kind.name();
+    let html = std::fs::read_to_string(dir.join(format!("{name}.html")))
+      .unwrap_or_else(|_| kind.default_html().to_string());
+    let text = std::fs::read_to_string(dir.join(format!("{name}.txt")))
+      .unwrap_or_else(|_| kind.default_text().to_string());
+    (html, text)
+  }
 
-    /// Render and send an email.
-    ///
-    /// `vars` is a slice of `(key, value)` pairs substituted into every
-    /// `{{key}}` placeholder in both the HTML and plain-text templates.
-    pub async fn send(
-        &self,
-        kind: EmailKind,
-        to_email: &str,
-        vars: &[(&str, &str)],
-    ) -> anyhow::Result<()> {
-        let (html_tpl, txt_tpl) = self.load_template(&kind);
-        let html = render(&html_tpl, vars);
-        let text = render(&txt_tpl, vars);
+  /// Render and send an email.
+  ///
+  /// `vars` is a slice of `(key, value)` pairs substituted into every
+  /// `{{key}}` placeholder in both the HTML and plain-text templates.
+  pub async fn send(&self, kind: EmailKind, to_email: &str, vars: &[(&str, &str)]) -> anyhow::Result<()> {
+    let (html_tpl, txt_tpl) = self.load_template(&kind);
+    let html = render(&html_tpl, vars);
+    let text = render(&txt_tpl, vars);
 
-        let from: Mailbox = format!("{} <{}>", self.config.from_name, self.config.from_email)
-            .parse()?;
-        let to: Mailbox = to_email.parse()?;
+    let from: Mailbox = format!("{} <{}>", self.config.from_name, self.config.from_email).parse()?;
+    let to: Mailbox = to_email.parse()?;
 
-        let message = Message::builder()
-            .from(from)
-            .to(to)
-            .subject(kind.subject())
-            .multipart(
-                MultiPart::alternative()
-                    .singlepart(
-                        SinglePart::builder()
-                            .header(header::ContentType::TEXT_PLAIN)
-                            .body(text),
-                    )
-                    .singlepart(
-                        SinglePart::builder()
-                            .header(header::ContentType::TEXT_HTML)
-                            .body(html),
-                    ),
-            )?;
+    let message = Message::builder()
+      .from(from)
+      .to(to)
+      .subject(kind.subject())
+      .multipart(
+        MultiPart::alternative()
+          .singlepart(
+            SinglePart::builder()
+              .header(header::ContentType::TEXT_PLAIN)
+              .body(text),
+          )
+          .singlepart(
+            SinglePart::builder()
+              .header(header::ContentType::TEXT_HTML)
+              .body(html),
+          ),
+      )?;
 
-        self.transport.send(message).await?;
-        Ok(())
-    }
+    self.transport.send(message).await?;
+    Ok(())
+  }
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
 fn build_transport(config: &MailerConfig) -> anyhow::Result<AsyncSmtpTransport<Tokio1Executor>> {
-    let transport = if config.smtp_tls {
-        let builder = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&config.smtp_host)?
-            .port(config.smtp_port);
-        if config.smtp_username.is_empty() {
-            builder.build()
-        } else {
-            builder
-                .credentials(Credentials::new(
-                    config.smtp_username.clone(),
-                    config.smtp_password.clone(),
-                ))
-                .build()
-        }
+  let transport = if config.smtp_tls {
+    let builder =
+      AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&config.smtp_host)?.port(config.smtp_port);
+    if config.smtp_username.is_empty() {
+      builder.build()
     } else {
-        let builder =
-            AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&config.smtp_host)
-                .port(config.smtp_port);
-        if config.smtp_username.is_empty() {
-            builder.build()
-        } else {
-            builder
-                .credentials(Credentials::new(
-                    config.smtp_username.clone(),
-                    config.smtp_password.clone(),
-                ))
-                .build()
-        }
-    };
-    Ok(transport)
+      builder
+        .credentials(Credentials::new(
+          config.smtp_username.clone(),
+          config.smtp_password.clone(),
+        ))
+        .build()
+    }
+  } else {
+    let builder =
+      AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&config.smtp_host).port(config.smtp_port);
+    if config.smtp_username.is_empty() {
+      builder.build()
+    } else {
+      builder
+        .credentials(Credentials::new(
+          config.smtp_username.clone(),
+          config.smtp_password.clone(),
+        ))
+        .build()
+    }
+  };
+  Ok(transport)
 }
 
 /// Replaces every `{{key}}` placeholder in `template` with its matching value.
 fn render(template: &str, vars: &[(&str, &str)]) -> String {
-    let mut result = template.to_string();
-    for (key, value) in vars {
-        result = result.replace(&format!("{{{{{key}}}}}"), value);
-    }
-    result
+  let mut result = template.to_string();
+  for (key, value) in vars {
+    result = result.replace(&format!("{{{{{key}}}}}"), value);
+  }
+  result
 }

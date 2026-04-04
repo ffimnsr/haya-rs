@@ -1,208 +1,160 @@
-use axum::{
-    Json,
-    extract::{Query, State},
+use axum::Json;
+use axum::extract::{
+  Query,
+  State,
 };
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use axum::http::HeaderMap;
 use chrono::Utc;
-use rand::RngCore;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::{
-    auth::{jwt, password},
-    error::{AuthError, Result},
-    model::{RefreshToken, TokenResponse, User, UserResponse},
-    state::AppState,
+use crate::auth::{
+  password,
+  session,
 };
+use crate::error::{
+  AuthError,
+  Result,
+};
+use crate::model::{
+  RefreshToken,
+  TokenGrantResponse,
+  TokenResponse,
+  User,
+};
+use crate::public::handler::mfa;
+use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
 pub struct TokenQuery {
-    pub grant_type: String,
+  pub grant_type: String,
 }
 
 pub async fn token(
-    State(state): State<AppState>,
-    Query(query): Query<TokenQuery>,
-    Json(body): Json<serde_json::Value>,
-) -> Result<Json<TokenResponse>> {
-    match query.grant_type.as_str() {
-        "password" => handle_password_grant(state, body).await,
-        "refresh_token" => handle_refresh_grant(state, body).await,
-        _ => Err(AuthError::ValidationFailed(format!(
-            "Unsupported grant_type: {}",
-            query.grant_type
-        ))),
-    }
+  State(state): State<AppState>,
+  Query(query): Query<TokenQuery>,
+  headers: HeaderMap,
+  Json(body): Json<serde_json::Value>,
+) -> Result<Json<TokenGrantResponse>> {
+  match query.grant_type.as_str() {
+    "password" => handle_password_grant(state, body).await.map(Json),
+    "refresh_token" => handle_refresh_grant(state, body)
+      .await
+      .map(|response| Json(TokenGrantResponse::Token(response))),
+    "mfa_totp" => handle_mfa_totp_grant(state, headers, body)
+      .await
+      .map(|response| Json(TokenGrantResponse::Token(response))),
+    _ => Err(AuthError::ValidationFailed(format!(
+      "Unsupported grant_type: {}",
+      query.grant_type
+    ))),
+  }
 }
 
-async fn handle_password_grant(
-    state: AppState,
-    body: serde_json::Value,
-) -> Result<Json<TokenResponse>> {
-    let email = body
-        .get("email")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AuthError::ValidationFailed("email is required".to_string()))?;
-    let pw = body
-        .get("password")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AuthError::ValidationFailed("password is required".to_string()))?;
+async fn handle_password_grant(state: AppState, body: serde_json::Value) -> Result<TokenGrantResponse> {
+  let email = body
+    .get("email")
+    .and_then(|v| v.as_str())
+    .ok_or_else(|| AuthError::ValidationFailed("email is required".to_string()))?;
+  let pw = body
+    .get("password")
+    .and_then(|v| v.as_str())
+    .ok_or_else(|| AuthError::ValidationFailed("password is required".to_string()))?;
 
-    let user: User = sqlx::query_as::<_, User>(
-        "SELECT id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_anonymous, banned_until, created_at, updated_at FROM auth.users WHERE email = $1"
+  let user: User = sqlx::query_as::<_, User>(
+        "SELECT id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_sso_user, is_anonymous, banned_until, deleted_at, created_at, updated_at FROM auth.users WHERE email = $1"
     )
     .bind(email)
     .fetch_optional(&state.db)
     .await?
     .ok_or(AuthError::InvalidCredentials)?;
 
-    if let Some(banned_until) = user.banned_until {
-        if banned_until > Utc::now() {
-            return Err(AuthError::UserBanned);
-        }
+  if let Some(banned_until) = user.banned_until {
+    if banned_until > Utc::now() {
+      return Err(AuthError::UserBanned);
     }
+  }
 
-    let hash = user
-        .encrypted_password
-        .as_deref()
-        .ok_or(AuthError::InvalidCredentials)?;
+  let hash = user
+    .encrypted_password
+    .as_deref()
+    .ok_or(AuthError::InvalidCredentials)?;
 
-    if !password::verify_password(pw, hash)? {
-        return Err(AuthError::InvalidCredentials);
-    }
+  if !password::verify_password(pw, hash)? {
+    return Err(AuthError::InvalidCredentials);
+  }
 
-    // Require email confirmation when mailer_autoconfirm is disabled
-    if !state.mailer_autoconfirm && user.email.is_some() && user.email_confirmed_at.is_none() {
-        return Err(AuthError::EmailNotConfirmed);
-    }
+  // Require email confirmation when mailer_autoconfirm is disabled
+  if !state.mailer_autoconfirm && user.email.is_some() && user.email_confirmed_at.is_none() {
+    return Err(AuthError::EmailNotConfirmed);
+  }
 
-    let now = Utc::now();
-    let session_id = Uuid::new_v4();
+  let factors = mfa::verified_factors_by_user_id(&state.db, user.id).await?;
+  if !factors.is_empty() {
+    let pending = mfa::create_pending_login(&state, user.id, "password").await?;
+    return Ok(TokenGrantResponse::PendingMfa(pending));
+  }
 
-    sqlx::query(
-        "INSERT INTO auth.sessions (id, user_id, aal, created_at, updated_at) VALUES ($1, $2, $3::auth.aal_level, $4, $5)"
-    )
-    .bind(session_id)
-    .bind(user.id)
-    .bind("aal1")
-    .bind(now)
-    .bind(now)
-    .execute(&state.db)
-    .await?;
-
-    let refresh_token_str = generate_refresh_token();
-    sqlx::query(
-        "INSERT INTO auth.refresh_tokens (instance_id, user_id, token, session_id, revoked, created_at, updated_at) VALUES ($1, $2, $3, $4, false, $5, $6)"
-    )
-    .bind(state.instance_id)
-    .bind(user.id.to_string())
-    .bind(&refresh_token_str)
-    .bind(session_id)
-    .bind(now)
-    .bind(now)
-    .execute(&state.db)
-    .await?;
-
-    sqlx::query("UPDATE auth.users SET last_sign_in_at = $1, updated_at = $2 WHERE id = $3")
-        .bind(now)
-        .bind(now)
-        .bind(user.id)
-        .execute(&state.db)
-        .await?;
-
-    let app_meta = user.raw_app_meta_data.clone().unwrap_or(serde_json::json!({}));
-    let user_meta = user.raw_user_meta_data.clone().unwrap_or(serde_json::json!({}));
-    let role = user.role.as_deref().unwrap_or("authenticated");
-
-    let access_token = jwt::encode_token(
-        user.id,
-        user.email.clone(),
-        user.phone.clone(),
-        role,
-        session_id,
-        user.is_anonymous,
-        "password",
-        user_meta,
-        app_meta,
-        &state.jwt_secret,
-        state.jwt_exp,
-        &state.issuer,
-    )?;
-
-    let expires_at = now.timestamp() + state.jwt_exp;
-    Ok(Json(TokenResponse {
-        access_token,
-        token_type: "bearer".to_string(),
-        expires_in: state.jwt_exp,
-        expires_at,
-        refresh_token: refresh_token_str,
-        user: UserResponse::from(user),
-    }))
+  session::issue_session(&state, &user, "password")
+    .await
+    .map(TokenGrantResponse::Token)
 }
 
-async fn handle_refresh_grant(
-    state: AppState,
-    body: serde_json::Value,
-) -> Result<Json<TokenResponse>> {
-    let rt_str = body
-        .get("refresh_token")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| AuthError::ValidationFailed("refresh_token is required".to_string()))?;
+async fn handle_refresh_grant(state: AppState, body: serde_json::Value) -> Result<TokenResponse> {
+  let rt_str = body
+    .get("refresh_token")
+    .and_then(|v| v.as_str())
+    .ok_or_else(|| AuthError::ValidationFailed("refresh_token is required".to_string()))?;
 
-    let rt: RefreshToken = sqlx::query_as::<_, RefreshToken>(
-        "SELECT id, instance_id, user_id, token, created_at, updated_at, parent, session_id, revoked FROM auth.refresh_tokens WHERE token = $1 AND revoked = false"
+  let now = Utc::now();
+  let refresh_expires_after = chrono::Duration::seconds(state.refresh_token_exp);
+  let mut tx = state.db.begin().await?;
+
+  let rt: RefreshToken = sqlx::query_as::<_, RefreshToken>(
+        "UPDATE auth.refresh_tokens SET revoked = true, updated_at = $1 WHERE token = $2 AND revoked = false AND created_at >= $3 RETURNING id, instance_id, user_id, token, created_at, updated_at, parent, session_id, revoked"
     )
+    .bind(now)
     .bind(rt_str)
-    .fetch_optional(&state.db)
+    .bind(now - refresh_expires_after)
+    .fetch_optional(&mut *tx)
     .await?
     .ok_or(AuthError::InvalidToken)?;
 
-    let session_id = rt.session_id.ok_or(AuthError::SessionNotFound)?;
-    let user_id_str = rt.user_id.ok_or(AuthError::UserNotFound)?;
-    let user_id: Uuid = user_id_str
-        .parse()
-        .map_err(|_| AuthError::InternalError("Invalid user_id in refresh token".to_string()))?;
+  let session_id = rt.session_id.ok_or(AuthError::SessionNotFound)?;
+  let user_id_str = rt.user_id.ok_or(AuthError::UserNotFound)?;
+  let user_id: Uuid = user_id_str
+    .parse()
+    .map_err(|_| AuthError::InternalError("Invalid user_id in refresh token".to_string()))?;
 
-    let session_exists: Option<(Uuid,)> = sqlx::query_as::<_, (Uuid,)>(
-        "SELECT id FROM auth.sessions WHERE id = $1"
-    )
-    .bind(session_id)
-    .fetch_optional(&state.db)
-    .await?;
+  let (session_row, amr) = session::load_session_context(&state, session_id)
+    .await
+    .map_err(|_| AuthError::SessionNotFound)?;
+  if session_row.user_id != user_id {
+    return Err(AuthError::InvalidToken);
+  }
+  if session_row.not_after.map(|value| value <= now).unwrap_or(false) {
+    return Err(AuthError::SessionNotFound);
+  }
 
-    if session_exists.is_none() {
-        return Err(AuthError::SessionNotFound);
-    }
-
-    let user: User = sqlx::query_as::<_, User>(
-        "SELECT id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_anonymous, banned_until, created_at, updated_at FROM auth.users WHERE id = $1"
+  let user: User = sqlx::query_as::<_, User>(
+        "SELECT id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_sso_user, is_anonymous, banned_until, deleted_at, created_at, updated_at FROM auth.users WHERE id = $1"
     )
     .bind(user_id)
     .fetch_optional(&state.db)
     .await?
     .ok_or(AuthError::UserNotFound)?;
 
-    // Reject banned users before issuing a new token
-    if let Some(banned_until) = user.banned_until {
-        if banned_until > Utc::now() {
-            return Err(AuthError::UserBanned);
-        }
+  // Reject banned users before issuing a new token
+  if let Some(banned_until) = user.banned_until {
+    if banned_until > Utc::now() {
+      return Err(AuthError::UserBanned);
     }
+  }
 
-    let now = Utc::now();
+  // Perform token rotation atomically: revoke old, insert new, update session.
+  let new_refresh_token = session::generate_refresh_token();
 
-    // Perform token rotation atomically: revoke old, insert new, update session.
-    // Without a transaction a crash between these writes would lock the user out.
-    let new_refresh_token = generate_refresh_token();
-    let mut tx = state.db.begin().await?;
-
-    sqlx::query("UPDATE auth.refresh_tokens SET revoked = true, updated_at = $1 WHERE id = $2")
-        .bind(now)
-        .bind(rt.id)
-        .execute(&mut *tx)
-        .await?;
-
-    sqlx::query(
+  sqlx::query(
         "INSERT INTO auth.refresh_tokens (instance_id, user_id, token, session_id, revoked, parent, created_at, updated_at) VALUES ($1, $2, $3, $4, false, $5, $6, $7)"
     )
     .bind(state.instance_id)
@@ -215,48 +167,47 @@ async fn handle_refresh_grant(
     .execute(&mut *tx)
     .await?;
 
-    sqlx::query("UPDATE auth.sessions SET refreshed_at = $1, updated_at = $2 WHERE id = $3")
-        // refreshed_at is 'timestamp without time zone' in the schema, so use naive_utc()
-        .bind(now.naive_utc())
-        .bind(now)
-        .bind(session_id)
-        .execute(&mut *tx)
-        .await?;
+  sqlx::query("UPDATE auth.sessions SET refreshed_at = $1, updated_at = $2 WHERE id = $3")
+    // refreshed_at is 'timestamp without time zone' in the schema, so use naive_utc()
+    .bind(now.naive_utc())
+    .bind(now)
+    .bind(session_id)
+    .execute(&mut *tx)
+    .await?;
 
-    tx.commit().await?;
+  tx.commit().await?;
 
-    let app_meta = user.raw_app_meta_data.clone().unwrap_or(serde_json::json!({}));
-    let user_meta = user.raw_user_meta_data.clone().unwrap_or(serde_json::json!({}));
-    let role = user.role.as_deref().unwrap_or("authenticated");
-
-    let access_token = jwt::encode_token(
-        user.id,
-        user.email.clone(),
-        user.phone.clone(),
-        role,
-        session_id,
-        user.is_anonymous,
-        "password",
-        user_meta,
-        app_meta,
-        &state.jwt_secret,
-        state.jwt_exp,
-        &state.issuer,
-    )?;
-
-    let expires_at = now.timestamp() + state.jwt_exp;
-    Ok(Json(TokenResponse {
-        access_token,
-        token_type: "bearer".to_string(),
-        expires_in: state.jwt_exp,
-        expires_at,
-        refresh_token: new_refresh_token,
-        user: UserResponse::from(user),
-    }))
+  session::build_token_response(
+    &state,
+    &user,
+    session_id,
+    session_row.aal.as_deref().unwrap_or("aal1"),
+    amr,
+    new_refresh_token,
+  )
+  .await
 }
 
-fn generate_refresh_token() -> String {
-    let mut bytes = [0u8; 32];
-    rand::rng().fill_bytes(&mut bytes);
-    URL_SAFE_NO_PAD.encode(bytes)
+async fn handle_mfa_totp_grant(
+  state: AppState,
+  headers: HeaderMap,
+  body: serde_json::Value,
+) -> Result<TokenResponse> {
+  let mfa_token = body
+    .get("mfa_token")
+    .and_then(|v| v.as_str())
+    .ok_or_else(|| AuthError::ValidationFailed("mfa_token is required".to_string()))?;
+  let factor_id = body
+    .get("factor_id")
+    .and_then(|v| v.as_str())
+    .ok_or_else(|| AuthError::ValidationFailed("factor_id is required".to_string()))?;
+  let factor_id = factor_id
+    .parse::<Uuid>()
+    .map_err(|_| AuthError::ValidationFailed("factor_id must be a UUID".to_string()))?;
+  let code = body
+    .get("code")
+    .and_then(|v| v.as_str())
+    .ok_or_else(|| AuthError::ValidationFailed("code is required".to_string()))?;
+
+  mfa::verify_pending_totp(&state, &headers, mfa_token, factor_id, code).await
 }

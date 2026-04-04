@@ -1,161 +1,115 @@
-use axum::{Json, extract::State};
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use axum::Json;
+use axum::extract::State;
 use chrono::Utc;
-use rand::RngCore;
 use serde::Deserialize;
-use uuid::Uuid;
 
-use crate::{
-    auth::jwt,
-    error::{AuthError, Result},
-    model::{TokenResponse, User, UserResponse},
-    state::AppState,
+use crate::auth::session;
+use crate::error::{
+  AuthError,
+  Result,
 };
+use crate::model::{
+  User,
+  UserResponse,
+  VerifyGrantResponse,
+};
+use crate::public::handler::mfa;
+use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
 pub struct VerifyRequest {
-    #[serde(rename = "type")]
-    pub verify_type: String,
-    pub token: String,
-    // Used for additional verification in some flows
-    #[allow(dead_code)]
-    pub email: Option<String>,
-}
-
-#[derive(Debug, serde::Serialize)]
-#[serde(untagged)]
-pub enum VerifyResponse {
-    Token(TokenResponse),
-    User(UserResponse),
+  #[serde(rename = "type")]
+  pub verify_type: String,
+  pub token: String,
+  // Used for additional verification in some flows
+  #[allow(dead_code)]
+  pub email: Option<String>,
 }
 
 pub async fn verify(
-    State(state): State<AppState>,
-    Json(req): Json<VerifyRequest>,
-) -> Result<Json<VerifyResponse>> {
-    match req.verify_type.as_str() {
-        "signup" => handle_signup_verify(state, req).await,
-        "recovery" => handle_recovery_verify(state, req).await,
-        _ => Err(AuthError::ValidationFailed(format!(
-            "Unsupported verify type: {}",
-            req.verify_type
-        ))),
-    }
+  State(state): State<AppState>,
+  Json(req): Json<VerifyRequest>,
+) -> Result<Json<VerifyGrantResponse>> {
+  match req.verify_type.as_str() {
+    "signup" => handle_signup_verify(state, req).await,
+    "recovery" => handle_recovery_verify(state, req).await,
+    "magiclink" => handle_magiclink_verify(state, req).await,
+    _ => Err(AuthError::ValidationFailed(format!(
+      "Unsupported verify type: {}",
+      req.verify_type
+    ))),
+  }
 }
 
-async fn handle_signup_verify(
-    state: AppState,
-    req: VerifyRequest,
-) -> Result<Json<VerifyResponse>> {
-    let user: User = sqlx::query_as::<_, User>(
-        "SELECT id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_anonymous, banned_until, created_at, updated_at FROM auth.users WHERE confirmation_token = $1 AND confirmation_sent_at > NOW() - INTERVAL '24 hours'"
-    )
-    .bind(&req.token)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(AuthError::InvalidToken)?;
-
-    let now = Utc::now();
-    sqlx::query(
-        "UPDATE auth.users SET email_confirmed_at = $1, confirmation_token = NULL, updated_at = $2 WHERE id = $3"
-    )
-    .bind(now)
-    .bind(now)
-    .bind(user.id)
-    .execute(&state.db)
-    .await?;
-
-    // Build updated user response directly without extra query
-    let mut user_response = UserResponse::from(user);
-    user_response.email_confirmed_at = Some(now);
-    user_response.confirmed_at = Some(now);
-    user_response.updated_at = Some(now);
-
-    Ok(Json(VerifyResponse::User(user_response)))
+async fn handle_signup_verify(state: AppState, req: VerifyRequest) -> Result<Json<VerifyGrantResponse>> {
+  let user = consume_confirmation_token(&state, &req.token, Utc::now()).await?;
+  let user_response = UserResponse::from_user(&state.db, user).await?;
+  Ok(Json(VerifyGrantResponse::User(user_response)))
 }
 
-async fn handle_recovery_verify(
-    state: AppState,
-    req: VerifyRequest,
-) -> Result<Json<VerifyResponse>> {
-    let user: User = sqlx::query_as::<_, User>(
-        "SELECT id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_anonymous, banned_until, created_at, updated_at FROM auth.users WHERE recovery_token = $1 AND recovery_sent_at > NOW() - INTERVAL '1 hour'"
+async fn handle_recovery_verify(state: AppState, req: VerifyRequest) -> Result<Json<VerifyGrantResponse>> {
+  let user = consume_recovery_token(&state, &req.token, Utc::now()).await?;
+
+  // Reject banned users before granting a new session
+  if let Some(banned_until) = user.banned_until {
+    if banned_until > Utc::now() {
+      return Err(AuthError::UserBanned);
+    }
+  }
+
+  let factors = mfa::verified_factors_by_user_id(&state.db, user.id).await?;
+  if !factors.is_empty() {
+    let pending = mfa::create_pending_login(&state, user.id, "recovery").await?;
+    return Ok(Json(VerifyGrantResponse::PendingMfa(pending)));
+  }
+
+  let response =
+    session::issue_session_with_context(&state, &user, "aal1", None, vec!["recovery".to_string()]).await?;
+  Ok(Json(VerifyGrantResponse::Token(response)))
+}
+
+async fn handle_magiclink_verify(state: AppState, req: VerifyRequest) -> Result<Json<VerifyGrantResponse>> {
+  let user = consume_confirmation_token(&state, &req.token, Utc::now()).await?;
+
+  if let Some(banned_until) = user.banned_until {
+    if banned_until > Utc::now() {
+      return Err(AuthError::UserBanned);
+    }
+  }
+
+  let factors = mfa::verified_factors_by_user_id(&state.db, user.id).await?;
+  if !factors.is_empty() {
+    let pending = mfa::create_pending_login(&state, user.id, "magiclink").await?;
+    return Ok(Json(VerifyGrantResponse::PendingMfa(pending)));
+  }
+
+  let response =
+    session::issue_session_with_context(&state, &user, "aal1", None, vec!["magiclink".to_string()]).await?;
+  Ok(Json(VerifyGrantResponse::Token(response)))
+}
+
+async fn consume_confirmation_token(
+  state: &AppState,
+  token: &str,
+  now: chrono::DateTime<Utc>,
+) -> Result<User> {
+  sqlx::query_as::<_, User>(
+        "UPDATE auth.users SET email_confirmed_at = COALESCE(email_confirmed_at, $1), confirmation_token = NULL, updated_at = $1 WHERE confirmation_token = $2 AND confirmation_sent_at > NOW() - INTERVAL '24 hours' RETURNING id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, COALESCE(confirmed_at, email_confirmed_at, phone_confirmed_at) as confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_sso_user, is_anonymous, banned_until, deleted_at, created_at, updated_at"
     )
-    .bind(&req.token)
+    .bind(now)
+    .bind(token)
     .fetch_optional(&state.db)
     .await?
-    .ok_or(AuthError::InvalidToken)?;
+    .ok_or(AuthError::InvalidToken)
+}
 
-    // Reject banned users before granting a new session
-    if let Some(banned_until) = user.banned_until {
-        if banned_until > Utc::now() {
-            return Err(AuthError::UserBanned);
-        }
-    }
-
-    let now = Utc::now();
-    sqlx::query(
-        "UPDATE auth.users SET recovery_token = NULL, updated_at = $1 WHERE id = $2"
+async fn consume_recovery_token(state: &AppState, token: &str, now: chrono::DateTime<Utc>) -> Result<User> {
+  sqlx::query_as::<_, User>(
+        "UPDATE auth.users SET recovery_token = NULL, updated_at = $1 WHERE recovery_token = $2 AND recovery_sent_at > NOW() - INTERVAL '1 hour' RETURNING id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, COALESCE(confirmed_at, email_confirmed_at, phone_confirmed_at) as confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_sso_user, is_anonymous, banned_until, deleted_at, created_at, updated_at"
     )
     .bind(now)
-    .bind(user.id)
-    .execute(&state.db)
-    .await?;
-
-    let session_id = Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO auth.sessions (id, user_id, aal, created_at, updated_at) VALUES ($1, $2, $3::auth.aal_level, $4, $5)"
-    )
-    .bind(session_id)
-    .bind(user.id)
-    .bind("aal1")
-    .bind(now)
-    .bind(now)
-    .execute(&state.db)
-    .await?;
-
-    let mut bytes = [0u8; 32];
-    rand::rng().fill_bytes(&mut bytes);
-    let refresh_token_str = URL_SAFE_NO_PAD.encode(bytes);
-
-    sqlx::query(
-        "INSERT INTO auth.refresh_tokens (instance_id, user_id, token, session_id, revoked, created_at, updated_at) VALUES ($1, $2, $3, $4, false, $5, $6)"
-    )
-    .bind(state.instance_id)
-    .bind(user.id.to_string())
-    .bind(&refresh_token_str)
-    .bind(session_id)
-    .bind(now)
-    .bind(now)
-    .execute(&state.db)
-    .await?;
-
-    let app_meta = user.raw_app_meta_data.clone().unwrap_or(serde_json::json!({}));
-    let user_meta = user.raw_user_meta_data.clone().unwrap_or(serde_json::json!({}));
-    let role = user.role.as_deref().unwrap_or("authenticated");
-
-    let access_token = jwt::encode_token(
-        user.id,
-        user.email.clone(),
-        user.phone.clone(),
-        role,
-        session_id,
-        user.is_anonymous,
-        "recovery",
-        user_meta,
-        app_meta,
-        &state.jwt_secret,
-        state.jwt_exp,
-        &state.issuer,
-    )?;
-
-    let expires_at = now.timestamp() + state.jwt_exp;
-    Ok(Json(VerifyResponse::Token(TokenResponse {
-        access_token,
-        token_type: "bearer".to_string(),
-        expires_in: state.jwt_exp,
-        expires_at,
-        refresh_token: refresh_token_str,
-        user: UserResponse::from(user),
-    })))
+    .bind(token)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or(AuthError::InvalidToken)
 }

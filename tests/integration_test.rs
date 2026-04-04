@@ -3,8 +3,8 @@
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn test_infrastructure() {
-        assert_eq!(2 + 2, 4);
-    }
+  #[test]
+  fn test_infrastructure() {
+    assert_eq!(2 + 2, 4);
+  }
 }
