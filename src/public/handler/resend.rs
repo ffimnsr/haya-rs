@@ -45,13 +45,12 @@ pub async fn resend(
     return Err(AuthError::ValidationFailed("Invalid email format".to_string()));
   }
 
-  let user_id: Option<ResendUserRow> =
-    sqlx::query_as::<_, ResendUserRow>(
-      "SELECT id, confirmation_sent_at, recovery_sent_at FROM auth.users WHERE email = $1",
-    )
-    .bind(email)
-    .fetch_optional(&state.db)
-    .await?;
+  let user_id: Option<ResendUserRow> = sqlx::query_as::<_, ResendUserRow>(
+    "SELECT id, confirmation_sent_at, recovery_sent_at FROM auth.users WHERE email = $1",
+  )
+  .bind(email)
+  .fetch_optional(&state.db)
+  .await?;
 
   if user_id.is_none() {
     return Ok(Json(serde_json::json!({})));
