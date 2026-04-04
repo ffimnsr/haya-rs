@@ -21,7 +21,10 @@ use crate::model::{
   UserResponse,
   identity_values_by_user_id,
 };
-use crate::public::handler::signup::is_valid_email;
+use crate::public::handler::signup::{
+  is_valid_e164_phone,
+  is_valid_email,
+};
 use crate::state::AppState;
 
 const ALLOWED_USER_ROLES: &[&str] = &["authenticated", "service_role", "supabase_admin", "anon"];
@@ -256,7 +259,7 @@ pub async fn admin_update_user(
         "Email address is already in use".to_string(),
       ));
     }
-    sqlx::query("UPDATE auth.users SET email = $1, updated_at = $2 WHERE id = $3")
+    sqlx::query("UPDATE auth.users SET email = $1, email_confirmed_at = NULL, updated_at = $2 WHERE id = $3")
       .bind(email)
       .bind(now)
       .bind(user_id)
@@ -265,6 +268,11 @@ pub async fn admin_update_user(
   }
 
   if let Some(ref phone) = req.phone {
+    if !is_valid_e164_phone(phone) {
+      return Err(AuthError::ValidationFailed(
+        "Phone must be a valid E.164 number".to_string(),
+      ));
+    }
     sqlx::query("UPDATE auth.users SET phone = $1, updated_at = $2 WHERE id = $3")
       .bind(phone)
       .bind(now)
@@ -374,9 +382,9 @@ pub(crate) fn parse_ban_duration(duration: &str) -> Result<i64, AuthError> {
 }
 
 pub(crate) fn validate_password_policy(password: &str) -> Result<(), AuthError> {
-  if password.len() < 6 {
+  if password.len() < 8 {
     return Err(AuthError::ValidationFailed(
-      "Password must be at least 6 characters.".to_string(),
+      "Password must be at least 8 characters.".to_string(),
     ));
   }
   if password.len() > 128 {

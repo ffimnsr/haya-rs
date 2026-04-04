@@ -47,7 +47,7 @@ export MAILER_AUTOCONFIRM=false
 Notes:
 
 - `JWT_SECRET` is required in normal operation and must be at least 32 characters.
-- `MFA_ENCRYPTION_KEY` is recommended in production so TOTP secrets are encrypted with dedicated key material.
+- `MFA_ENCRYPTION_KEY` is required and must be separate from `JWT_SECRET` so TOTP secrets use independent key material.
 - For local development only, you can set `HAYA_DEV_MODE=1` to allow an insecure built-in JWT secret.
 - If `GOTRUE_JWT_ISSUER` or `JWT_ISSUER` is not set, Haya uses `SITE_URL` as the issuer.
 
@@ -63,6 +63,7 @@ You can also run the binary in CLI mode against the configured PostgreSQL databa
 
 ```bash
 cargo run -- status
+cargo run -- heartbeat
 cargo run -- settings
 cargo run -- sso list
 cargo run -- user list
@@ -117,6 +118,7 @@ Examples:
 
 ```bash
 haya status
+haya heartbeat
 haya settings
 haya config validate
 haya db status
@@ -164,6 +166,7 @@ Supported command groups:
 
 - `haya serve`
 - `haya status`
+- `haya heartbeat`
 - `haya settings`
 - `haya config validate`
 - `haya db status|migrate|vacuum-token-tables`
@@ -193,13 +196,32 @@ Supported command groups:
 - `GOTRUE_JWT_ISSUER`: preferred JWT issuer override.
 - `JWT_ISSUER`: fallback issuer override.
 - `JWT_EXPIRY`: access token lifetime in seconds. Defaults to `3600`.
-- `MFA_ENCRYPTION_KEY`: optional dedicated key material for encrypting stored TOTP secrets. When omitted, Haya derives the MFA encryption key from `JWT_SECRET`.
+- `MFA_ENCRYPTION_KEY`: dedicated key material for encrypting stored TOTP secrets. This is required and must not reuse `JWT_SECRET`.
 - `REFRESH_TOKEN_EXPIRY`: refresh token lifetime in seconds. Defaults to `1209600`.
 - `INSTANCE_ID`: explicit UUID for the auth instance.
 - `MAILER_AUTOCONFIRM`: enables automatic confirmation when set to `true` or `1`.
 - `CORS_ALLOWED_ORIGINS`: comma-separated list of allowed origins. Also used as the allowlist for OIDC `redirect_to` origins alongside `SITE_URL`. If omitted, CORS is permissive.
 - `HAYA_DEV_MODE`: enables an insecure built-in JWT secret for local development only.
 - `HAYA_PID_FILE`: overrides the pid file path used by `haya reload` and `haya doctor`. Defaults to `/tmp/haya.pid`.
+
+### systemd watchdog
+
+The sample unit at [contrib/systemd/haya.service](contrib/systemd/haya.service) uses `Type=notify` with `WatchdogSec=30s`.
+Haya sends `READY=1` after the HTTP listener is bound, periodic watchdog pings while an in-process loopback probe to `/health` succeeds, and `STOPPING=1` during shutdown.
+
+This is stronger than checking whether the PID still exists because watchdog pings stop when the process is no longer making progress through its own health path.
+
+Useful commands:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now haya
+systemctl status haya
+journalctl -u haya -f
+```
+
+When the watchdog fires, systemd treats it as a service failure and restarts the unit according to `Restart=on-failure`.
+You will typically see log lines in `systemctl status haya` or `journalctl -u haya` indicating that the watchdog timeout expired and that systemd scheduled a restart for the service.
 
 ### OIDC SSO
 
@@ -231,9 +253,9 @@ curl -i "http://localhost:9999/authorize?provider=acme&redirect_to=http://localh
 
 `redirect_to` must stay on `SITE_URL` or one of the configured `CORS_ALLOWED_ORIGINS`.
 
-After a successful provider login, Haya creates or reuses the mapped identity, issues its normal session tokens, and redirects to `redirect_to` with the tokens in the URL fragment.
+After a successful provider login, Haya creates or reuses the mapped identity, then redirects to `redirect_to?code=<one-time-code>`. Exchange that code through `POST /token?grant_type=oidc_callback` to receive the normal token payload.
 
-If the user has a verified TOTP factor, Haya redirects with `mfa_required=true` and `mfa_token=<token>` in the fragment instead. The client then lists factors through `POST /mfa/factors` with the token in the JSON body or `Authorization` header and finishes MFA with `POST /token?grant_type=mfa_totp`.
+If the user has a verified TOTP factor, the same one-time callback code exchange returns the pending MFA payload instead. Send MFA bearer tokens only in the `Authorization` header for both `POST /mfa/factors` and `POST /token?grant_type=mfa_totp`.
 
 ### TOTP MFA
 
@@ -283,8 +305,9 @@ Complete the second factor:
 
 ```bash
 curl -X POST "http://localhost:9999/token?grant_type=mfa_totp" \
+  -H "Authorization: Bearer $MFA_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"mfa_token":"pending-token","factor_id":"factor-id","code":"123456"}'
+  -d '{"factor_id":"factor-id","code":"123456"}'
 ```
 
 Delete a verified factor with an `aal2` session:

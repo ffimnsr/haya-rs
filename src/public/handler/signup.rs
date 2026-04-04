@@ -17,6 +17,7 @@ use crate::model::{
   User,
   UserResponse,
 };
+use crate::public::handler::admin::validate_password_policy;
 use crate::state::AppState;
 
 #[derive(Debug, serde::Serialize)]
@@ -48,16 +49,14 @@ pub async fn signup(
     return Err(AuthError::ValidationFailed("Invalid email format".to_string()));
   }
   if let Some(ref password) = req.password {
-    if password.len() < 6 {
-      return Err(AuthError::ValidationFailed(
-        "Password must be at least 6 characters.".to_string(),
-      ));
-    }
-    if password.len() > 128 {
-      return Err(AuthError::ValidationFailed(
-        "Password must not exceed 128 characters.".to_string(),
-      ));
-    }
+    validate_password_policy(password)?;
+  }
+  if let Some(ref phone) = req.phone
+    && !is_valid_e164_phone(phone)
+  {
+    return Err(AuthError::ValidationFailed(
+      "Phone must be a valid E.164 number".to_string(),
+    ));
   }
 
   if let Some(ref email) = req.email {
@@ -158,6 +157,20 @@ pub fn is_valid_email(email: &str) -> bool {
   !local.is_empty() && domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
 }
 
+pub fn is_valid_e164_phone(phone: &str) -> bool {
+  let bytes = phone.as_bytes();
+  if !(8..=16).contains(&bytes.len()) || bytes.first() != Some(&b'+') {
+    return false;
+  }
+
+  match bytes.get(1) {
+    Some(b'1'..=b'9') => {},
+    _ => return false,
+  }
+
+  bytes[2..].iter().all(u8::is_ascii_digit)
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -179,5 +192,19 @@ mod tests {
     assert!(!is_valid_email("user@domain."));
     assert!(!is_valid_email("user@nodot"));
     assert!(!is_valid_email(""));
+  }
+
+  #[test]
+  fn test_valid_e164_phone_numbers() {
+    assert!(is_valid_e164_phone("+15555550123"));
+    assert!(is_valid_e164_phone("+639171234567"));
+  }
+
+  #[test]
+  fn test_invalid_e164_phone_numbers() {
+    assert!(!is_valid_e164_phone("15555550123"));
+    assert!(!is_valid_e164_phone("+05555550123"));
+    assert!(!is_valid_e164_phone("+1 555 555 0123"));
+    assert!(!is_valid_e164_phone("+123"));
   }
 }

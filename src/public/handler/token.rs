@@ -22,7 +22,10 @@ use crate::model::{
   TokenResponse,
   User,
 };
-use crate::public::handler::mfa;
+use crate::public::handler::{
+  mfa,
+  sso,
+};
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -44,6 +47,7 @@ pub async fn token(
     "mfa_totp" => handle_mfa_totp_grant(state, headers, body)
       .await
       .map(|response| Json(TokenGrantResponse::Token(Box::new(response)))),
+    "oidc_callback" => sso::exchange_callback_code(state, body).await.map(Json),
     _ => Err(AuthError::ValidationFailed(format!(
       "Unsupported grant_type: {}",
       query.grant_type
@@ -61,26 +65,30 @@ async fn handle_password_grant(state: AppState, body: serde_json::Value) -> Resu
     .and_then(|v| v.as_str())
     .ok_or_else(|| AuthError::ValidationFailed("password is required".to_string()))?;
 
-  let user: User = sqlx::query_as::<_, User>(
+  let Some(user) = sqlx::query_as::<_, User>(
         "SELECT id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_sso_user, is_anonymous, banned_until, deleted_at, created_at, updated_at FROM auth.users WHERE email = $1"
     )
     .bind(email)
     .fetch_optional(&state.db)
-    .await?
-    .ok_or(AuthError::InvalidCredentials)?;
+    .await? else {
+      password::burn_password_work(pw)?;
+      return Err(AuthError::InvalidCredentials);
+    };
 
   if user.deleted_at.is_some() {
+    password::burn_password_work(pw)?;
     return Err(AuthError::InvalidCredentials);
   }
 
   if user.banned_until.map(|value| value > Utc::now()).unwrap_or(false) {
+    password::burn_password_work(pw)?;
     return Err(AuthError::InvalidCredentials);
   }
 
-  let hash = user
-    .encrypted_password
-    .as_deref()
-    .ok_or(AuthError::InvalidCredentials)?;
+  let Some(hash) = user.encrypted_password.as_deref() else {
+    password::burn_password_work(pw)?;
+    return Err(AuthError::InvalidCredentials);
+  };
 
   if !password::verify_password(pw, hash)? {
     return Err(AuthError::InvalidCredentials);
@@ -88,6 +96,7 @@ async fn handle_password_grant(state: AppState, body: serde_json::Value) -> Resu
 
   // Require email confirmation when mailer_autoconfirm is disabled
   if !state.mailer_autoconfirm && user.email.is_some() && user.email_confirmed_at.is_none() {
+    password::burn_password_work(pw)?;
     return Err(AuthError::InvalidCredentials);
   }
 
@@ -191,10 +200,13 @@ async fn handle_mfa_totp_grant(
   headers: HeaderMap,
   body: serde_json::Value,
 ) -> Result<TokenResponse> {
-  let mfa_token = body
-    .get("mfa_token")
-    .and_then(|v| v.as_str())
-    .ok_or_else(|| AuthError::ValidationFailed("mfa_token is required".to_string()))?;
+  let mfa_token = headers
+    .get(axum::http::header::AUTHORIZATION)
+    .and_then(|value| value.to_str().ok())
+    .and_then(|value| value.strip_prefix("Bearer "))
+    .ok_or_else(|| {
+      AuthError::ValidationFailed("Authorization header with Bearer MFA token is required".to_string())
+    })?;
   let factor_id = body
     .get("factor_id")
     .and_then(|v| v.as_str())

@@ -11,6 +11,7 @@ use crate::error::{
   Result,
 };
 use crate::mailer::EmailKind;
+use crate::public::handler::recover::email_token_cooldown_active;
 use crate::public::handler::signup::is_valid_email;
 use crate::state::AppState;
 
@@ -22,6 +23,13 @@ pub struct ResendRequest {
   // Reserved for future phone OTP resend support
   #[allow(dead_code)]
   pub phone: Option<String>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct ResendUserRow {
+  id: uuid::Uuid,
+  confirmation_sent_at: Option<chrono::DateTime<Utc>>,
+  recovery_sent_at: Option<chrono::DateTime<Utc>>,
 }
 
 pub async fn resend(
@@ -37,17 +45,23 @@ pub async fn resend(
     return Err(AuthError::ValidationFailed("Invalid email format".to_string()));
   }
 
-  let user_id: Option<(uuid::Uuid,)> =
-    sqlx::query_as::<_, (uuid::Uuid,)>("SELECT id FROM auth.users WHERE email = $1")
-      .bind(email)
-      .fetch_optional(&state.db)
-      .await?;
+  let user_id: Option<ResendUserRow> =
+    sqlx::query_as::<_, ResendUserRow>(
+      "SELECT id, confirmation_sent_at, recovery_sent_at FROM auth.users WHERE email = $1",
+    )
+    .bind(email)
+    .fetch_optional(&state.db)
+    .await?;
 
   if user_id.is_none() {
     return Ok(Json(serde_json::json!({})));
   }
 
-  let (user_id,) = user_id.unwrap();
+  let ResendUserRow {
+    id: user_id,
+    confirmation_sent_at,
+    recovery_sent_at,
+  } = user_id.unwrap();
   let mut bytes = [0u8; 32];
   rand::rng().fill_bytes(&mut bytes);
   let token = URL_SAFE_NO_PAD.encode(bytes);
@@ -55,6 +69,10 @@ pub async fn resend(
 
   match req.resend_type.as_str() {
     "signup" => {
+      if email_token_cooldown_active(confirmation_sent_at, now) {
+        tracing::info!("Signup confirmation regeneration suppressed by cooldown");
+        return Ok(Json(serde_json::json!({})));
+      }
       sqlx::query(
                 "UPDATE auth.users SET confirmation_token = $1, confirmation_sent_at = $2, updated_at = $3 WHERE id = $4"
             )
@@ -78,14 +96,18 @@ pub async fn resend(
           )
           .await
         {
-          tracing::error!(error = %e, %email, "Failed to resend confirmation email");
+          tracing::error!(error = %e, "Failed to resend confirmation email");
         }
       } else {
-        tracing::warn!(%email, "SMTP not configured; confirmation email not sent");
+        tracing::warn!("SMTP not configured; confirmation email not sent");
       }
-      tracing::info!(%email, "Signup confirmation token regenerated");
+      tracing::info!("Signup confirmation token regenerated");
     },
     "recovery" => {
+      if email_token_cooldown_active(recovery_sent_at, now) {
+        tracing::info!("Recovery token regeneration suppressed by cooldown");
+        return Ok(Json(serde_json::json!({})));
+      }
       sqlx::query(
         "UPDATE auth.users SET recovery_token = $1, recovery_sent_at = $2, updated_at = $3 WHERE id = $4",
       )
@@ -109,12 +131,12 @@ pub async fn resend(
           )
           .await
         {
-          tracing::error!(error = %e, %email, "Failed to resend recovery email");
+          tracing::error!(error = %e, "Failed to resend recovery email");
         }
       } else {
-        tracing::warn!(%email, "SMTP not configured; recovery email not sent");
+        tracing::warn!("SMTP not configured; recovery email not sent");
       }
-      tracing::info!(%email, "Recovery token regenerated");
+      tracing::info!("Recovery token regenerated");
     },
     _ => {
       return Err(AuthError::ValidationFailed(format!(

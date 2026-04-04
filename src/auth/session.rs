@@ -4,12 +4,17 @@ use chrono::Utc;
 use rand::RngCore;
 use uuid::Uuid;
 
-use crate::auth::jwt;
+use crate::auth::{
+  jwt,
+  password,
+};
 use crate::error::{
   AuthError,
   Result,
 };
+use crate::mailer::EmailKind;
 use crate::model::{
+  MfaFactorRow,
   SessionAmrClaimRow,
   SessionRow,
   TokenResponse,
@@ -17,6 +22,8 @@ use crate::model::{
   UserResponse,
 };
 use crate::state::AppState;
+
+const REAUTHENTICATION_TTL_MINUTES: i64 = 10;
 
 pub async fn issue_session(state: &AppState, user: &User, method: &str) -> Result<TokenResponse> {
   issue_session_with_context(state, user, "aal1", None, vec![method.to_string()]).await
@@ -219,4 +226,115 @@ pub fn ensure_user_is_active(user: &User) -> Result<()> {
   }
 
   Ok(())
+}
+
+pub async fn require_reauthentication(
+  state: &AppState,
+  claims: &jwt::Claims,
+  user: &User,
+  current_password: Option<&str>,
+  reauthentication_token: Option<&str>,
+) -> Result<()> {
+  let has_verified_mfa = sqlx::query_as::<_, MfaFactorRow>(
+    "SELECT id, user_id, friendly_name, factor_type::text as factor_type, status::text as status, secret, created_at, updated_at, last_challenged_at FROM auth.mfa_factors WHERE user_id = $1 AND status = 'verified'::auth.factor_status LIMIT 1",
+  )
+  .bind(user.id)
+  .fetch_optional(&state.db)
+  .await?
+  .is_some();
+
+  if has_verified_mfa && claims.aal != "aal2" {
+    return Err(AuthError::NotAuthorized);
+  }
+
+  if let Some(token) = reauthentication_token
+    .map(str::trim)
+    .filter(|token| !token.is_empty())
+  {
+    if consume_reauthentication_token(state, user.id, token, Utc::now()).await? {
+      return Ok(());
+    }
+    return Err(AuthError::InvalidToken);
+  }
+
+  if let Some(hash) = user.encrypted_password.as_deref() {
+    let current_password = current_password.ok_or_else(|| {
+      AuthError::ValidationFailed("current_password or reauthentication_token is required".to_string())
+    })?;
+    if !password::verify_password(current_password, hash)? {
+      return Err(AuthError::InvalidCredentials);
+    }
+    return Ok(());
+  }
+
+  if !has_verified_mfa {
+    return Err(AuthError::NotAuthorized);
+  }
+
+  Ok(())
+}
+
+pub async fn send_reauthentication_token(state: &AppState, user: &User) -> Result<()> {
+  let email = user.email.as_deref().ok_or_else(|| {
+    AuthError::ValidationFailed("reauthentication requires an email-backed account".to_string())
+  })?;
+  let mailer = state.mailer.as_ref().ok_or_else(|| {
+    AuthError::ValidationFailed("reauthentication email delivery is unavailable".to_string())
+  })?;
+
+  let token = generate_refresh_token();
+  let now = Utc::now();
+  let expires_minutes = REAUTHENTICATION_TTL_MINUTES.to_string();
+
+  sqlx::query(
+    "UPDATE auth.users SET reauthentication_token = $1, reauthentication_sent_at = $2, updated_at = $3 WHERE id = $4",
+  )
+  .bind(&token)
+  .bind(now)
+  .bind(now)
+  .bind(user.id)
+  .execute(&state.db)
+  .await?;
+
+  if let Err(e) = mailer
+    .send(
+      EmailKind::Reauthentication,
+      email,
+      &[
+        ("site_name", state.site_name.as_str()),
+        ("reauthentication_token", token.as_str()),
+        ("email", email),
+        ("expires_minutes", expires_minutes.as_str()),
+      ],
+    )
+    .await
+  {
+    tracing::error!(error = %e, "Failed to send reauthentication email");
+    return Err(AuthError::InternalError(
+      "failed to send reauthentication email".to_string(),
+    ));
+  }
+
+  tracing::info!("Sensitive-action reauthentication token issued");
+  Ok(())
+}
+
+async fn consume_reauthentication_token(
+  state: &AppState,
+  user_id: Uuid,
+  token: &str,
+  now: chrono::DateTime<Utc>,
+) -> Result<bool> {
+  let valid_after = now - chrono::Duration::minutes(REAUTHENTICATION_TTL_MINUTES);
+  let updated = sqlx::query(
+    "UPDATE auth.users SET reauthentication_token = '', reauthentication_sent_at = NULL, updated_at = $1 WHERE id = $2 AND reauthentication_token = $3 AND reauthentication_sent_at > $4",
+  )
+  .bind(now)
+  .bind(user_id)
+  .bind(token)
+  .bind(valid_after)
+  .execute(&state.db)
+  .await?;
+
+  Ok(updated.rows_affected() == 1)
 }

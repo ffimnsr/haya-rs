@@ -37,6 +37,7 @@ pub struct RuntimeConfig {
   pub port: u16,
   pub database_url: String,
   pub site_url: String,
+  pub redirect_allowed_origins: Vec<String>,
   pub allowed_redirect_origins: Vec<String>,
   pub cors_allowed_origins: Vec<String>,
   pub site_name: String,

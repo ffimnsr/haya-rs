@@ -11,6 +11,7 @@ use crate::utils;
 pub async fn serve(port: u16, state: AppState) -> anyhow::Result<()> {
   utils::write_pid_file()?;
   let reload_state = state.clone();
+  let watchdog_client = state.http_client.clone();
   tokio::spawn(async move {
     utils::reload_signal(move || {
       let reload_state = reload_state.clone();
@@ -30,11 +31,19 @@ pub async fn serve(port: u16, state: AppState) -> anyhow::Result<()> {
   let listener = TcpListener::bind(&addr)
     .await
     .with_context(|| format!("Failed to bind to address {}", addr))?;
+  let local_addr = listener.local_addr()?;
+  let watchdog = utils::spawn_systemd_watchdog(watchdog_client, port);
 
-  println!("Haya Auth is now listening at {}", listener.local_addr()?);
-  axum::serve(listener, service)
+  println!("Haya Auth is now listening at {}", local_addr);
+  utils::notify_ready(&format!("Haya Auth is listening at {local_addr}"));
+  let serve_result = axum::serve(listener, service)
     .with_graceful_shutdown(utils::shutdown_signal())
-    .await?;
+    .await;
+  utils::notify_stopping("Haya Auth is stopping");
+  if let Some(watchdog) = watchdog {
+    watchdog.abort();
+  }
+  serve_result?;
   let _ = utils::remove_pid_file();
 
   Ok(())

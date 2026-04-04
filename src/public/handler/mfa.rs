@@ -39,11 +39,15 @@ use crate::state::AppState;
 
 const MFA_PENDING_TTL_MINUTES: i64 = 5;
 const MFA_MAX_VERIFY_ATTEMPTS: i32 = 10;
+const MFA_ENROLL_MAX_VERIFY_ATTEMPTS: i32 = 10;
+const MFA_ENROLL_VERIFY_WINDOW_MINUTES: i64 = 5;
 
 #[derive(Debug, Deserialize)]
 pub struct CreateTotpFactorRequest {
   pub friendly_name: Option<String>,
   pub issuer: Option<String>,
+  pub current_password: Option<String>,
+  pub reauthentication_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -53,7 +57,7 @@ pub struct VerifyTotpCodeRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct PendingMfaFactorsRequest {
-  pub mfa_token: String,
+  pub mfa_token: Option<String>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -62,6 +66,15 @@ struct PendingFlowRow {
   user_id: Option<Uuid>,
   authentication_method: String,
   expires_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct TotpFactorVerifyStateRow {
+  id: Uuid,
+  secret: Option<String>,
+  last_verified_totp_step: Option<i64>,
+  enrollment_verify_attempts: i32,
+  last_enrollment_verify_attempt_at: Option<chrono::DateTime<Utc>>,
 }
 
 pub async fn list_factors(
@@ -80,6 +93,14 @@ pub async fn create_totp_factor(
 ) -> Result<Json<MfaEnrollResponse>> {
   let user_id = user_id_from_claims(&claims)?;
   let user = fetch_user(&state.db, user_id).await?;
+  session::require_reauthentication(
+    &state,
+    &claims,
+    &user,
+    req.current_password.as_deref(),
+    req.reauthentication_token.as_deref(),
+  )
+  .await?;
   let friendly_name = normalize_friendly_name(req.friendly_name)?;
 
   ensure_friendly_name_available(&state.db, user_id, friendly_name.as_deref()).await?;
@@ -121,27 +142,40 @@ pub async fn verify_totp_factor(
   Json(req): Json<VerifyTotpCodeRequest>,
 ) -> Result<Json<MfaFactorResponse>> {
   let user_id = user_id_from_claims(&claims)?;
-  let factor = factor_by_id(&state.db, factor_id, user_id).await?;
+  let now = Utc::now();
+  let mut tx = state.db.begin().await?;
+  let factor = factor_verify_state_by_id(tx.as_mut(), factor_id, user_id).await?;
+  ensure_enrollment_verify_attempts_available(&factor, now)?;
   let secret = factor
     .secret
     .as_deref()
     .ok_or_else(|| AuthError::InternalError("missing TOTP secret".to_string()))?;
   let decrypted = mfa::decrypt_secret(secret, &state.mfa_encryption_key)?;
-  let now = Utc::now();
-
-  if !mfa::verify_code(&decrypted, &req.code, now.timestamp())? {
+  let matched_step = mfa::matching_code_step(&decrypted, &req.code, now.timestamp())?;
+  let Some(matched_step) = matched_step else {
+    record_failed_enrollment_attempt(tx.as_mut(), factor.id, &factor, now).await?;
+    tx.commit().await?;
     return Err(AuthError::ValidationFailed("Invalid TOTP code".to_string()));
+  };
+
+  if factor.last_verified_totp_step == Some(matched_step) {
+    tx.rollback().await?;
+    return Err(AuthError::ValidationFailed(
+      "TOTP code has already been used for this factor".to_string(),
+    ));
   }
 
   let verified: MfaFactorRow = sqlx::query_as::<_, MfaFactorRow>(
-    "UPDATE auth.mfa_factors SET status = 'verified'::auth.factor_status, last_challenged_at = $1, updated_at = $2 WHERE id = $3 AND user_id = $4 RETURNING id, user_id, friendly_name, factor_type::text as factor_type, status::text as status, secret, created_at, updated_at, last_challenged_at",
+    "UPDATE auth.mfa_factors SET status = 'verified'::auth.factor_status, last_challenged_at = $1, last_verified_totp_step = $2, enrollment_verify_attempts = 0, last_enrollment_verify_attempt_at = NULL, updated_at = $3 WHERE id = $4 AND user_id = $5 RETURNING id, user_id, friendly_name, factor_type::text as factor_type, status::text as status, secret, created_at, updated_at, last_challenged_at",
   )
   .bind(now)
+  .bind(matched_step)
   .bind(now)
   .bind(factor_id)
   .bind(user_id)
-  .fetch_one(&state.db)
+  .fetch_one(tx.as_mut())
   .await?;
+  tx.commit().await?;
 
   Ok(Json(verified.into()))
 }
@@ -357,6 +391,21 @@ async fn verified_factor_by_id(db: &PgPool, factor_id: Uuid, user_id: Uuid) -> R
   .ok_or(AuthError::NotAuthorized)
 }
 
+async fn factor_verify_state_by_id(
+  db: &mut sqlx::PgConnection,
+  factor_id: Uuid,
+  user_id: Uuid,
+) -> Result<TotpFactorVerifyStateRow> {
+  sqlx::query_as::<_, TotpFactorVerifyStateRow>(
+    "SELECT id, secret, last_verified_totp_step, enrollment_verify_attempts, last_enrollment_verify_attempt_at FROM auth.mfa_factors WHERE id = $1 AND user_id = $2 AND factor_type = 'totp'::auth.factor_type FOR UPDATE",
+  )
+  .bind(factor_id)
+  .bind(user_id)
+  .fetch_optional(db)
+  .await?
+  .ok_or(AuthError::UserNotFound)
+}
+
 async fn fetch_user(db: &PgPool, user_id: Uuid) -> Result<User> {
   sqlx::query_as::<_, User>(
     "SELECT id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_sso_user, is_anonymous, banned_until, deleted_at, created_at, updated_at FROM auth.users WHERE id = $1",
@@ -456,11 +505,55 @@ fn normalize_friendly_name(value: Option<String>) -> Result<Option<String>> {
   }
 }
 
+fn current_enrollment_attempts(factor: &TotpFactorVerifyStateRow, now: chrono::DateTime<Utc>) -> i32 {
+  let window_start = now - Duration::minutes(MFA_ENROLL_VERIFY_WINDOW_MINUTES);
+  if factor
+    .last_enrollment_verify_attempt_at
+    .is_some_and(|last_attempt| last_attempt >= window_start)
+  {
+    factor.enrollment_verify_attempts
+  } else {
+    0
+  }
+}
+
+fn ensure_enrollment_verify_attempts_available(
+  factor: &TotpFactorVerifyStateRow,
+  now: chrono::DateTime<Utc>,
+) -> Result<()> {
+  if current_enrollment_attempts(factor, now) >= MFA_ENROLL_MAX_VERIFY_ATTEMPTS {
+    return Err(AuthError::ValidationFailed(
+      "Too many TOTP verification attempts. Please wait before retrying.".to_string(),
+    ));
+  }
+
+  Ok(())
+}
+
+async fn record_failed_enrollment_attempt(
+  db: &mut sqlx::PgConnection,
+  factor_id: Uuid,
+  factor: &TotpFactorVerifyStateRow,
+  now: chrono::DateTime<Utc>,
+) -> Result<()> {
+  let attempts = current_enrollment_attempts(factor, now) + 1;
+  sqlx::query(
+    "UPDATE auth.mfa_factors SET enrollment_verify_attempts = $1, last_enrollment_verify_attempt_at = $2, updated_at = $3 WHERE id = $4",
+  )
+  .bind(attempts)
+  .bind(now)
+  .bind(now)
+  .bind(factor_id)
+  .execute(db)
+  .await?;
+  Ok(())
+}
+
 fn client_ip(headers: &HeaderMap) -> IpAddr {
   headers
     .get("x-forwarded-for")
     .and_then(|value| value.to_str().ok())
-    .and_then(|value| value.split(',').next())
+    .and_then(|value| value.split(',').next_back())
     .or_else(|| headers.get("x-real-ip").and_then(|value| value.to_str().ok()))
     .and_then(|value| value.trim().parse::<IpAddr>().ok())
     .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
@@ -475,9 +568,53 @@ fn extract_mfa_token<'a>(headers: &'a HeaderMap, req: &'a PendingMfaFactorsReque
     return Ok(value);
   }
 
-  if req.mfa_token.trim().is_empty() {
-    return Err(AuthError::ValidationFailed("mfa_token is required".to_string()));
+  if req
+    .mfa_token
+    .as_deref()
+    .is_some_and(|value| !value.trim().is_empty())
+  {
+    return Err(AuthError::ValidationFailed(
+      "mfa_token must be sent in the Authorization header".to_string(),
+    ));
   }
 
-  Ok(req.mfa_token.as_str())
+  Err(AuthError::ValidationFailed(
+    "Authorization header with Bearer MFA token is required".to_string(),
+  ))
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn sample_factor_state() -> TotpFactorVerifyStateRow {
+    TotpFactorVerifyStateRow {
+      id: Uuid::new_v4(),
+      secret: Some("secret".to_string()),
+      last_verified_totp_step: None,
+      enrollment_verify_attempts: 0,
+      last_enrollment_verify_attempt_at: None,
+    }
+  }
+
+  #[test]
+  fn enrollment_attempts_reset_outside_window() {
+    let mut factor = sample_factor_state();
+    let now = Utc::now();
+    factor.enrollment_verify_attempts = MFA_ENROLL_MAX_VERIFY_ATTEMPTS;
+    factor.last_enrollment_verify_attempt_at =
+      Some(now - Duration::minutes(MFA_ENROLL_VERIFY_WINDOW_MINUTES + 1));
+
+    assert_eq!(current_enrollment_attempts(&factor, now), 0);
+  }
+
+  #[test]
+  fn enrollment_attempts_block_within_window() {
+    let mut factor = sample_factor_state();
+    let now = Utc::now();
+    factor.enrollment_verify_attempts = MFA_ENROLL_MAX_VERIFY_ATTEMPTS;
+    factor.last_enrollment_verify_attempt_at = Some(now);
+
+    assert!(ensure_enrollment_verify_attempts_available(&factor, now).is_err());
+  }
 }

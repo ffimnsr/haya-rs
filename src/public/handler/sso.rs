@@ -21,9 +21,14 @@ use crate::error::{
   AuthError,
   Result,
 };
-use crate::model::User;
+use crate::model::{
+  TokenGrantResponse,
+  User,
+};
 use crate::public::handler::mfa;
 use crate::state::AppState;
+
+const OIDC_RESULT_TTL_MINUTES: i64 = 1;
 
 #[derive(Debug, Deserialize)]
 pub struct AuthorizeQuery {
@@ -54,6 +59,12 @@ struct FlowStateRow {
 #[derive(Debug, sqlx::FromRow)]
 struct IdentityLookup {
   user_id: Uuid,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct OidcResultRow {
+  provider_access_token: Option<String>,
+  expires_at: Option<chrono::DateTime<Utc>>,
 }
 
 pub async fn authorize(
@@ -152,18 +163,20 @@ pub async fn callback(
 
   if !factors.is_empty() {
     let pending = mfa::create_pending_login(&state, user.id, "oidc").await?;
+    let exchange_code = persist_oidc_result(&state, TokenGrantResponse::PendingMfa(pending)).await?;
 
-    return Ok(Redirect::to(&build_mfa_redirect_url(
+    return Ok(Redirect::to(&build_redirect_url(
       validated_redirect_to(&state, flow.redirect_to.as_deref())?,
-      &pending.mfa_token,
+      &exchange_code,
     )?));
   }
 
   let response = session::issue_session(&state, &user, "oidc").await?;
+  let exchange_code = persist_oidc_result(&state, TokenGrantResponse::Token(Box::new(response))).await?;
 
   Ok(Redirect::to(&build_redirect_url(
     validated_redirect_to(&state, flow.redirect_to.as_deref())?,
-    &response,
+    &exchange_code,
   )?))
 }
 
@@ -264,31 +277,57 @@ fn ensure_user_signin_allowed(user: &User) -> Result<()> {
   session::ensure_user_is_active(user)
 }
 
-fn build_redirect_url(redirect_to: String, response: &crate::model::TokenResponse) -> Result<String> {
-  let mut url = url::Url::parse(&redirect_to)
-    .map_err(|e| AuthError::ValidationFailed(format!("invalid redirect_to: {e}")))?;
-  let fragment = url::form_urlencoded::Serializer::new(String::new())
-    .append_pair("access_token", &response.access_token)
-    .append_pair("token_type", &response.token_type)
-    .append_pair("expires_in", &response.expires_in.to_string())
-    .append_pair("expires_at", &response.expires_at.to_string())
-    .append_pair("refresh_token", &response.refresh_token)
-    .append_pair("provider_token", "")
-    .append_pair("type", "bearer")
-    .finish();
-  url.set_fragment(Some(&fragment));
-  Ok(url.to_string())
+pub async fn exchange_callback_code(state: AppState, body: serde_json::Value) -> Result<TokenGrantResponse> {
+  let code = body
+    .get("code")
+    .and_then(|value| value.as_str())
+    .ok_or_else(|| AuthError::ValidationFailed("code is required".to_string()))?;
+
+  let row: OidcResultRow = sqlx::query_as::<_, OidcResultRow>(
+    "DELETE FROM auth.flow_state WHERE auth_code = $1 AND provider_type = 'oidc_result' RETURNING provider_access_token, expires_at",
+  )
+  .bind(code)
+  .fetch_optional(&state.db)
+  .await?
+  .ok_or(AuthError::InvalidToken)?;
+
+  if row.expires_at.map(|value| value < Utc::now()).unwrap_or(true) {
+    return Err(AuthError::TokenExpired);
+  }
+
+  let payload = row
+    .provider_access_token
+    .ok_or_else(|| AuthError::InternalError("OIDC callback result is missing".to_string()))?;
+  serde_json::from_str(&payload)
+    .map_err(|e| AuthError::InternalError(format!("invalid OIDC callback result payload: {e}")))
 }
 
-fn build_mfa_redirect_url(redirect_to: String, mfa_token: &str) -> Result<String> {
+async fn persist_oidc_result(state: &AppState, response: TokenGrantResponse) -> Result<String> {
+  let exchange_code = session::generate_refresh_token();
+  let now = Utc::now();
+  let expires_at = now + Duration::minutes(OIDC_RESULT_TTL_MINUTES);
+  let payload = serde_json::to_string(&response)
+    .map_err(|e| AuthError::InternalError(format!("failed to serialize OIDC callback result: {e}")))?;
+
+  sqlx::query(
+    "INSERT INTO auth.flow_state (id, user_id, auth_code, code_challenge_method, code_challenge, provider_type, provider_access_token, provider_refresh_token, authentication_method, created_at, updated_at, expires_at) VALUES ($1, NULL, $2, 'plain'::auth.code_challenge_method, '', 'oidc_result', $3, NULL, 'oidc', $4, $5, $6)",
+  )
+  .bind(Uuid::new_v4())
+  .bind(&exchange_code)
+  .bind(payload)
+  .bind(now)
+  .bind(now)
+  .bind(expires_at)
+  .execute(&state.db)
+  .await?;
+
+  Ok(exchange_code)
+}
+
+fn build_redirect_url(redirect_to: String, exchange_code: &str) -> Result<String> {
   let mut url = url::Url::parse(&redirect_to)
     .map_err(|e| AuthError::ValidationFailed(format!("invalid redirect_to: {e}")))?;
-  let fragment = url::form_urlencoded::Serializer::new(String::new())
-    .append_pair("mfa_required", "true")
-    .append_pair("mfa_token", mfa_token)
-    .finish();
-  url.set_fragment(Some(&fragment));
-
+  url.query_pairs_mut().append_pair("code", exchange_code);
   Ok(url.to_string())
 }
 
@@ -330,42 +369,11 @@ mod tests {
   use super::*;
 
   #[test]
-  fn appends_token_fragment_to_redirect() {
-    let redirect = build_redirect_url(
-      "https://app.example.com/welcome".to_string(),
-      &crate::model::TokenResponse {
-        access_token: "access".to_string(),
-        token_type: "bearer".to_string(),
-        expires_in: 3600,
-        expires_at: 1234,
-        refresh_token: "refresh".to_string(),
-        user: crate::model::UserResponse {
-          id: Uuid::nil(),
-          instance_id: None,
-          aud: "authenticated".to_string(),
-          role: "authenticated".to_string(),
-          email: None,
-          email_confirmed_at: None,
-          phone: None,
-          phone_confirmed_at: None,
-          confirmed_at: None,
-          last_sign_in_at: None,
-          app_metadata: serde_json::Value::Object(Default::default()),
-          user_metadata: serde_json::Value::Object(Default::default()),
-          identities: vec![],
-          is_super_admin: false,
-          is_sso_user: true,
-          banned_until: None,
-          deleted_at: None,
-          created_at: None,
-          updated_at: None,
-          is_anonymous: false,
-        },
-      },
-    )
-    .unwrap();
+  fn appends_one_time_code_query_to_redirect() {
+    let redirect =
+      build_redirect_url("https://app.example.com/welcome".to_string(), "one-time-code").unwrap();
 
-    assert!(redirect.contains("#access_token=access"));
-    assert!(redirect.contains("refresh_token=refresh"));
+    assert!(redirect.contains("?code=one-time-code"));
+    assert!(!redirect.contains('#'));
   }
 }

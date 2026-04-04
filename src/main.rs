@@ -63,18 +63,24 @@ async fn main() -> anyhow::Result<()> {
 
   let runs_server = cli.runs_server();
   let needs_app_state = cli.needs_app_state();
-  let bootstrap = build_runtime_bootstrap()?;
+  let needs_database = cli.needs_database();
+  let bootstrap = build_runtime_bootstrap(needs_app_state)?;
   let runtime_config = bootstrap.config.clone();
   if runs_server {
     let version = env!("CARGO_PKG_VERSION");
     println!("Booting up Haya Auth v{}", version);
   }
-  if !needs_app_state {
-    return crate::cli::run_without_state(cli, runtime_config).await;
+  if needs_app_state {
+    let state = build_app_state(&bootstrap).await?;
+    return crate::cli::run(cli, state, runtime_config).await;
   }
 
-  let state = build_app_state(&bootstrap).await?;
-  crate::cli::run(cli, state, runtime_config).await
+  if needs_database {
+    let db = db::init_pool(&runtime_config.database_url).await?;
+    return crate::cli::run_with_db(cli, db, runtime_config).await;
+  }
+
+  crate::cli::run_without_state(cli, runtime_config, bootstrap.http_client).await
 }
 
 fn origin_from_url(value: &str) -> anyhow::Result<String> {
@@ -90,7 +96,29 @@ fn origin_from_url(value: &str) -> anyhow::Result<String> {
   Ok(origin)
 }
 
-fn build_runtime_bootstrap() -> anyhow::Result<RuntimeBootstrap> {
+fn parse_origin_list_env(name: &str) -> Vec<String> {
+  env::var(name)
+    .map(|value| {
+      value
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>()
+    })
+    .unwrap_or_default()
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+  env::var(name)
+    .map(|value| {
+      let value = value.trim();
+      value == "1" || value.eq_ignore_ascii_case("true")
+    })
+    .unwrap_or(false)
+}
+
+fn build_runtime_bootstrap(require_full_runtime: bool) -> anyhow::Result<RuntimeBootstrap> {
   let database_url = env::var("DATABASE_URL")
     .or_else(|_| env::var("DEFAULT_DATABASE_URL"))
     .unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string());
@@ -98,32 +126,34 @@ fn build_runtime_bootstrap() -> anyhow::Result<RuntimeBootstrap> {
     .redirect(reqwest::redirect::Policy::none())
     .build()?;
 
-  let dev_mode = env::var("HAYA_DEV_MODE").is_ok();
+  let dev_mode = env_flag_enabled("HAYA_DEV_MODE");
   let jwt_secret = match env::var("JWT_SECRET") {
     Ok(secret) if secret.len() >= 32 => secret,
-    Ok(secret) if secret.is_empty() => {
+    Ok(secret) if secret.is_empty() && require_full_runtime => {
       anyhow::bail!("JWT_SECRET must not be empty");
     },
-    Ok(_) => {
+    Ok(secret) if require_full_runtime => {
+      let _ = secret;
       anyhow::bail!("JWT_SECRET must be at least 32 characters long");
     },
-    Err(_) => {
-      if dev_mode {
-        let dev_secret = "super-secret-jwt-token-with-at-least-32-characters-long";
-        tracing::warn!(
-          "⚠️  JWT_SECRET not set! Using insecure development secret. \
-                     Set HAYA_DEV_MODE= to suppress this warning. \
-                     NEVER use this configuration in production!"
-        );
-        dev_secret.to_string()
-      } else {
-        anyhow::bail!(
-          "JWT_SECRET environment variable is required. \
-                     Set a strong secret of at least 32 characters. \
-                     For development mode only, set HAYA_DEV_MODE=1 to use a default secret."
-        );
-      }
+    Ok(secret) => secret,
+    Err(_) if dev_mode => {
+      let dev_secret = "super-secret-jwt-token-with-at-least-32-characters-long";
+      tracing::warn!(
+        "⚠️  JWT_SECRET not set! Using insecure development secret. \
+                   Set HAYA_DEV_MODE=1 only for local development. \
+                   NEVER use this configuration in production!"
+      );
+      dev_secret.to_string()
     },
+    Err(_) if require_full_runtime => {
+      anyhow::bail!(
+        "JWT_SECRET environment variable is required. \
+                   Set a strong secret of at least 32 characters. \
+                   For development mode only, set HAYA_DEV_MODE=1 to use a default secret."
+      );
+    },
+    Err(_) => String::new(),
   };
 
   let jwt_exp: i64 = env::var("JWT_EXPIRY")
@@ -133,13 +163,12 @@ fn build_runtime_bootstrap() -> anyhow::Result<RuntimeBootstrap> {
 
   let (mfa_encryption_key, mfa_key_source) = match env::var("MFA_ENCRYPTION_KEY") {
     Ok(value) if !value.trim().is_empty() => (mfa::derive_encryption_key(&value), "env"),
-    Ok(_) => anyhow::bail!("MFA_ENCRYPTION_KEY must not be empty when set"),
-    Err(_) => {
-      tracing::warn!(
-        "MFA_ENCRYPTION_KEY not set; deriving MFA encryption key from JWT_SECRET. Set MFA_ENCRYPTION_KEY explicitly in production."
-      );
-      (mfa::derive_encryption_key(&jwt_secret), "jwt_secret")
-    },
+    Ok(_) if require_full_runtime => anyhow::bail!("MFA_ENCRYPTION_KEY must not be empty when set"),
+    Ok(_) => ([0; 32], "unset"),
+    Err(_) if require_full_runtime => anyhow::bail!(
+      "MFA_ENCRYPTION_KEY environment variable is required and must be set independently from JWT_SECRET"
+    ),
+    Err(_) => ([0; 32], "unset"),
   };
 
   let refresh_token_exp: i64 = env::var("REFRESH_TOKEN_EXPIRY")
@@ -148,18 +177,10 @@ fn build_runtime_bootstrap() -> anyhow::Result<RuntimeBootstrap> {
     .unwrap_or(1_209_600);
 
   let site_url = env::var("SITE_URL").unwrap_or_else(|_| "http://localhost:9999".to_string());
-  let cors_allowed_origins = env::var("CORS_ALLOWED_ORIGINS")
-    .map(|value| {
-      value
-        .split(',')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .collect::<Vec<_>>()
-    })
-    .unwrap_or_default();
+  let cors_allowed_origins = parse_origin_list_env("CORS_ALLOWED_ORIGINS");
+  let redirect_allowed_origins = parse_origin_list_env("ALLOWED_REDIRECT_ORIGINS");
   let mut allowed_redirect_origins = vec![origin_from_url(&site_url)?];
-  for origin in &cors_allowed_origins {
+  for origin in &redirect_allowed_origins {
     allowed_redirect_origins.push(origin_from_url(origin)?);
   }
   allowed_redirect_origins.sort();
@@ -222,6 +243,7 @@ fn build_runtime_bootstrap() -> anyhow::Result<RuntimeBootstrap> {
     port,
     database_url,
     site_url,
+    redirect_allowed_origins,
     allowed_redirect_origins,
     cors_allowed_origins,
     site_name,

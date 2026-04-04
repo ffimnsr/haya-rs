@@ -68,9 +68,26 @@ impl Cli {
   }
 
   pub fn needs_app_state(&self) -> bool {
-    !matches!(
+    matches!(
       self.command,
-      Some(Command::Settings) | Some(Command::Reload) | Some(Command::Config { .. })
+      None
+        | Some(Command::Serve(_))
+        | Some(Command::Status)
+        | Some(Command::Token { .. })
+        | Some(Command::Sso { .. })
+        | Some(Command::Admin { .. })
+        | Some(Command::User { .. })
+    )
+  }
+
+  pub fn needs_database(&self) -> bool {
+    matches!(
+      self.command,
+      Some(Command::Doctor)
+        | Some(Command::Db { .. })
+        | Some(Command::Session { .. })
+        | Some(Command::Mfa { .. })
+        | Some(Command::Audit { .. })
     )
   }
 }
@@ -78,6 +95,7 @@ impl Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
   Serve(ServeArgs),
+  Heartbeat,
   Status,
   Settings,
   Reload,
@@ -486,6 +504,7 @@ struct SettingsView {
   site_url: String,
   issuer: String,
   site_name: String,
+  redirect_allowed_origins: Vec<String>,
   allowed_redirect_origins: Vec<String>,
   cors_allowed_origins: Vec<String>,
   jwt_exp: i64,
@@ -654,6 +673,7 @@ struct ConfigValidateReport {
   issuer: String,
   port: u16,
   pid_file: String,
+  redirect_allowed_origins: Vec<String>,
   cors_allowed_origins: Vec<String>,
   allowed_redirect_origins: Vec<String>,
 }
@@ -673,28 +693,56 @@ pub async fn run(cli: Cli, state: AppState, config: RuntimeConfig) -> anyhow::Re
     None => public::serve(config.port, state).await,
     Some(Command::Serve(args)) => public::serve(args.port.unwrap_or(config.port), state).await,
     Some(Command::Status) => show_status(&state.db, &state, &config).await,
-    Some(Command::Settings) => show_settings(&config),
-    Some(Command::Reload) => reload_server(&config),
-    Some(Command::Doctor) => doctor(&state.db, &config).await,
-    Some(Command::Config { command }) => run_config_command(command, &config).await,
-    Some(Command::Db { command }) => run_db_command(command, &state.db).await,
-    Some(Command::Session { command }) => run_session_command(command, &state.db).await,
-    Some(Command::Mfa { command }) => run_mfa_command(command, &state.db).await,
     Some(Command::Token { command }) => run_token_command(command, &state, &config).await,
-    Some(Command::Audit { command }) => run_audit_command(command, &state.db).await,
     Some(Command::Sso { command }) => run_sso_command(command, &state).await,
     Some(Command::Admin { command }) => run_admin_command(command, &state).await,
     Some(Command::User { command }) => run_user_command(command, &state).await,
+    Some(Command::Heartbeat)
+    | Some(Command::Settings)
+    | Some(Command::Reload)
+    | Some(Command::Doctor)
+    | Some(Command::Config { .. })
+    | Some(Command::Db { .. })
+    | Some(Command::Session { .. })
+    | Some(Command::Mfa { .. })
+    | Some(Command::Audit { .. }) => bail!("this command should not use the full application runtime"),
   }
 }
 
-pub async fn run_without_state(cli: Cli, config: RuntimeConfig) -> anyhow::Result<()> {
+pub async fn run_with_db(cli: Cli, db: PgPool, config: RuntimeConfig) -> anyhow::Result<()> {
   match cli.command {
+    Some(Command::Doctor) => doctor(&db, &config).await,
+    Some(Command::Db { command }) => run_db_command(command, &db).await,
+    Some(Command::Session { command }) => run_session_command(command, &db).await,
+    Some(Command::Mfa { command }) => run_mfa_command(command, &db).await,
+    Some(Command::Audit { command }) => run_audit_command(command, &db).await,
+    _ => bail!("this command does not use the database-only runtime"),
+  }
+}
+
+pub async fn run_without_state(
+  cli: Cli,
+  config: RuntimeConfig,
+  http_client: reqwest::Client,
+) -> anyhow::Result<()> {
+  match cli.command {
+    Some(Command::Heartbeat) => heartbeat(&config, &http_client).await,
     Some(Command::Settings) => show_settings(&config),
     Some(Command::Reload) => reload_server(&config),
     Some(Command::Config { command }) => run_config_command(command, &config).await,
     _ => bail!("this command requires the full application runtime"),
   }
+}
+
+async fn heartbeat(config: &RuntimeConfig, http_client: &reqwest::Client) -> anyhow::Result<()> {
+  let response = utils::probe_local_health(http_client, config.port, Duration::from_secs(3)).await?;
+
+  print_json(&serde_json::json!({
+    "ok": true,
+    "status": response.status,
+    "target": response.target,
+    "response": response.body,
+  }))
 }
 
 async fn show_status(db: &PgPool, state: &AppState, config: &RuntimeConfig) -> anyhow::Result<()> {
@@ -740,6 +788,7 @@ fn show_settings(config: &RuntimeConfig) -> anyhow::Result<()> {
     site_url: config.site_url.clone(),
     issuer: config.issuer.clone(),
     site_name: config.site_name.clone(),
+    redirect_allowed_origins: config.redirect_allowed_origins.clone(),
     allowed_redirect_origins: config.allowed_redirect_origins.clone(),
     cors_allowed_origins: config.cors_allowed_origins.clone(),
     jwt_exp: config.jwt_exp,
@@ -1622,6 +1671,7 @@ fn validate_config(config: &RuntimeConfig) -> anyhow::Result<()> {
     issuer: config.issuer.clone(),
     port: config.port,
     pid_file: config.pid_file.clone(),
+    redirect_allowed_origins: config.redirect_allowed_origins.clone(),
     cors_allowed_origins: config.cors_allowed_origins.clone(),
     allowed_redirect_origins: config.allowed_redirect_origins.clone(),
   })
@@ -1802,11 +1852,7 @@ async fn discover_sso_provider(state: &AppState, name: &str) -> anyhow::Result<(
 }
 
 async fn db_status(db: &PgPool) -> anyhow::Result<()> {
-  let current_versions: Vec<(String,)> =
-    sqlx::query_as("SELECT version FROM auth.schema_migrations ORDER BY version ASC")
-      .fetch_all(db)
-      .await?;
-  let current_versions = current_versions.into_iter().map(|row| row.0).collect::<Vec<_>>();
+  let current_versions = current_migration_versions(db).await?;
 
   let available_versions = std::fs::read_dir("migrations")?
     .filter_map(|entry| entry.ok())
@@ -1822,15 +1868,16 @@ async fn db_status(db: &PgPool) -> anyhow::Result<()> {
     .cloned()
     .collect::<Vec<_>>();
 
-  let (oidc_provider_count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM auth.oidc_providers")
-    .fetch_one(db)
-    .await?;
-  let (user_count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM auth.users")
-    .fetch_one(db)
-    .await?;
-  let (session_count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM auth.sessions")
-    .fetch_one(db)
-    .await?;
+  let oidc_provider_count = count_if_table_exists(
+    db,
+    "auth",
+    "oidc_providers",
+    "SELECT COUNT(*) FROM auth.oidc_providers",
+  )
+  .await?;
+  let user_count = count_if_table_exists(db, "auth", "users", "SELECT COUNT(*) FROM auth.users").await?;
+  let session_count =
+    count_if_table_exists(db, "auth", "sessions", "SELECT COUNT(*) FROM auth.sessions").await?;
 
   print_json(&DbStatusReport {
     current_versions,
@@ -1863,6 +1910,7 @@ async fn db_migrate(db: &PgPool) -> anyhow::Result<()> {
 
     let sql = std::fs::read_to_string(&path)
       .with_context(|| format!("failed to read migration {}", path.display()))?;
+    let sql = migration_up_sql(&sql);
     let mut tx = db.begin().await?;
     sqlx::raw_sql(&sql).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO auth.schema_migrations (version) VALUES ($1)")
@@ -2083,6 +2131,10 @@ async fn table_exists(db: &PgPool, schema: &str, table: &str) -> anyhow::Result<
 }
 
 async fn current_migration_versions(db: &PgPool) -> anyhow::Result<Vec<String>> {
+  if !table_exists(db, "auth", "schema_migrations").await? {
+    return Ok(Vec::new());
+  }
+
   Ok(
     sqlx::query_as::<_, (String,)>("SELECT version FROM auth.schema_migrations ORDER BY version ASC")
       .fetch_all(db)
@@ -2091,6 +2143,42 @@ async fn current_migration_versions(db: &PgPool) -> anyhow::Result<Vec<String>> 
       .map(|row| row.0)
       .collect(),
   )
+}
+
+async fn count_if_table_exists(db: &PgPool, schema: &str, table: &str, sql: &str) -> anyhow::Result<i64> {
+  if !table_exists(db, schema, table).await? {
+    return Ok(0);
+  }
+
+  count_query(db, sql).await
+}
+
+fn migration_up_sql(sql: &str) -> String {
+  let mut in_up = false;
+  let mut saw_marker = false;
+  let mut lines = Vec::new();
+
+  for line in sql.lines() {
+    match line.trim() {
+      "-- !UP" => {
+        in_up = true;
+        saw_marker = true;
+      },
+      "-- !DOWN" => {
+        in_up = false;
+      },
+      _ if in_up => lines.push(line),
+      _ => {},
+    }
+  }
+
+  if saw_marker {
+    let mut up_sql = lines.join("\n");
+    up_sql.push('\n');
+    up_sql
+  } else {
+    sql.to_string()
+  }
 }
 
 async fn count_query(db: &PgPool, sql: &str) -> anyhow::Result<i64> {
@@ -2176,10 +2264,20 @@ mod tests {
   #[test]
   fn cli_only_builds_app_state_for_runtime_commands() {
     assert!(!Cli::parse_from(["haya", "settings"]).needs_app_state());
+    assert!(!Cli::parse_from(["haya", "heartbeat"]).needs_app_state());
     assert!(!Cli::parse_from(["haya", "reload"]).needs_app_state());
+    assert!(!Cli::parse_from(["haya", "db", "migrate"]).needs_app_state());
     assert!(!Cli::parse_from(["haya", "config", "validate"]).needs_app_state());
     assert!(Cli::parse_from(["haya", "status"]).needs_app_state());
     assert!(Cli::parse_from(["haya"]).needs_app_state());
+  }
+
+  #[test]
+  fn cli_detects_database_only_commands() {
+    assert!(Cli::parse_from(["haya", "db", "migrate"]).needs_database());
+    assert!(Cli::parse_from(["haya", "doctor"]).needs_database());
+    assert!(!Cli::parse_from(["haya", "heartbeat"]).needs_database());
+    assert!(!Cli::parse_from(["haya", "status"]).needs_database());
   }
 
   #[test]

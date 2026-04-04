@@ -1,8 +1,11 @@
 use std::fs;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::Context;
 use tokio::signal;
+use tokio::task::JoinHandle;
+use tokio::time::MissedTickBehavior;
 
 // fn generate_authorization_code() -> String {
 //     let random_bytes = rand::thread_rng().gen::<[u8; 256]>();
@@ -79,4 +82,123 @@ pub fn pid_file_path() -> PathBuf {
   std::env::var("HAYA_PID_FILE")
     .map(PathBuf::from)
     .unwrap_or_else(|_| PathBuf::from("/tmp/haya.pid"))
+}
+
+pub struct LocalHealthResponse {
+  pub target: String,
+  pub status: u16,
+  pub body: serde_json::Value,
+}
+
+pub async fn probe_local_health(
+  http_client: &reqwest::Client,
+  port: u16,
+  timeout: Duration,
+) -> anyhow::Result<LocalHealthResponse> {
+  let targets = [
+    format!("http://127.0.0.1:{port}/health"),
+    format!("http://[::1]:{port}/health"),
+  ];
+  let mut last_error = None;
+
+  for target in targets {
+    let response = match tokio::time::timeout(timeout, http_client.get(&target).send()).await {
+      Ok(Ok(response)) => response,
+      Ok(Err(error)) => {
+        last_error = Some(anyhow::Error::new(error).context(format!("health probe failed for {target}")));
+        continue;
+      },
+      Err(_) => {
+        last_error = Some(anyhow::anyhow!("health probe timed out for {target}"));
+        continue;
+      },
+    };
+    let status = response.status();
+    let response = match response.error_for_status() {
+      Ok(response) => response,
+      Err(error) => {
+        last_error = Some(
+          anyhow::Error::new(error)
+            .context(format!("health probe returned a non-success status for {target}")),
+        );
+        continue;
+      },
+    };
+    let body = response
+      .json()
+      .await
+      .with_context(|| format!("health probe returned invalid JSON for {target}"))?;
+
+    return Ok(LocalHealthResponse {
+      target,
+      status: status.as_u16(),
+      body,
+    });
+  }
+
+  Err(
+    last_error
+      .unwrap_or_else(|| anyhow::anyhow!("local health probe targets were exhausted without a result")),
+  )
+}
+
+#[cfg(unix)]
+pub fn notify_ready(status: &str) {
+  if let Err(error) = sd_notify::notify(&[
+    sd_notify::NotifyState::Status(status),
+    sd_notify::NotifyState::Ready,
+  ]) {
+    tracing::warn!(error = %error, "Failed to send systemd ready notification");
+  }
+}
+
+#[cfg(not(unix))]
+pub fn notify_ready(_status: &str) {}
+
+#[cfg(unix)]
+pub fn notify_stopping(status: &str) {
+  if let Err(error) = sd_notify::notify(&[
+    sd_notify::NotifyState::Status(status),
+    sd_notify::NotifyState::Stopping,
+  ]) {
+    tracing::warn!(error = %error, "Failed to send systemd stopping notification");
+  }
+}
+
+#[cfg(not(unix))]
+pub fn notify_stopping(_status: &str) {}
+
+#[cfg(unix)]
+pub fn spawn_systemd_watchdog(http_client: reqwest::Client, port: u16) -> Option<JoinHandle<()>> {
+  let timeout = sd_notify::watchdog_enabled()?;
+  let interval = std::cmp::max(timeout / 2, Duration::from_secs(1));
+
+  Some(tokio::spawn(async move {
+    let mut ticker = tokio::time::interval(interval);
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    ticker.tick().await;
+
+    loop {
+      ticker.tick().await;
+      match probe_local_health(&http_client, port, Duration::from_secs(3)).await {
+        Ok(_) => {
+          if let Err(error) = sd_notify::notify(&[sd_notify::NotifyState::Watchdog]) {
+            tracing::warn!(error = %error, "Failed to send systemd watchdog notification");
+          }
+        },
+        Err(error) => {
+          let status = format!("watchdog probe failed: {error}");
+          tracing::warn!(error = %error, "Systemd watchdog probe failed");
+          if let Err(notify_error) = sd_notify::notify(&[sd_notify::NotifyState::Status(&status)]) {
+            tracing::warn!(error = %notify_error, "Failed to send watchdog failure status to systemd");
+          }
+        },
+      }
+    }
+  }))
+}
+
+#[cfg(not(unix))]
+pub fn spawn_systemd_watchdog(_http_client: reqwest::Client, _port: u16) -> Option<JoinHandle<()>> {
+  None
 }

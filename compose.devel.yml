@@ -1,0 +1,105 @@
+services:
+  db:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: mysecretpassword
+      POSTGRES_DB: haya
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata_devel:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d haya"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - backend
+
+  migrate:
+    image: haya-devel:local
+    restart: "no"
+    command: ["db", "migrate"]
+    environment:
+      DATABASE_URL: postgres://postgres:mysecretpassword@db:5432/haya
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - backend
+
+  haya:
+    image: haya-devel:local
+    build:
+      context: .
+      dockerfile: Containerfile
+    restart: unless-stopped
+    command: ["serve"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      DATABASE_URL: postgres://postgres:mysecretpassword@db:5432/haya
+      JWT_SECRET: dev-only-jwt-secret-change-before-sharing-12345
+      MFA_ENCRYPTION_KEY: dev-only-mfa-encryption-key-change-before-sharing
+      PORT: 9999
+      SITE_URL: http://localhost:8080
+      CORS_ALLOWED_ORIGINS: http://localhost:3000,http://localhost:8080
+      HAYA_PID_FILE: /tmp/haya.pid
+      RUST_LOG: haya=info,tower_http=info
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/haya", "heartbeat"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - backend
+
+  edge:
+    image: nginxinc/nginx-unprivileged:1.29-alpine
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./contrib/docker/nginx/devel.conf:/etc/nginx/conf.d/default.conf:ro,z
+    depends_on:
+      haya:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - frontend
+      - backend
+
+volumes:
+  pgdata_devel:
+
+networks:
+  frontend:
+  backend:
+    internal: true

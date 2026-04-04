@@ -4,17 +4,21 @@ use chrono::Utc;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::auth::password;
+use crate::auth::{
+  password,
+  session,
+};
 use crate::error::{
   AuthError,
   Result,
 };
 use crate::middleware::auth::AuthUser;
 use crate::model::{
-  MfaFactorRow,
   User,
   UserResponse,
 };
+use crate::public::handler::admin::validate_password_policy;
+use crate::public::handler::signup::is_valid_e164_phone;
 use crate::state::AppState;
 
 pub async fn get_user(
@@ -44,6 +48,7 @@ pub struct UpdateUserRequest {
   pub phone: Option<String>,
   pub data: Option<serde_json::Value>,
   pub current_password: Option<String>,
+  pub reauthentication_token: Option<String>,
 }
 
 pub async fn update_user(
@@ -67,22 +72,20 @@ pub async fn update_user(
   let changing_sensitive_fields = req.password.is_some() || req.email.is_some() || req.phone.is_some();
 
   if changing_sensitive_fields {
-    require_sensitive_change_reauth(&state, &claims, &user, req.current_password.as_deref()).await?;
+    session::require_reauthentication(
+      &state,
+      &claims,
+      &user,
+      req.current_password.as_deref(),
+      req.reauthentication_token.as_deref(),
+    )
+    .await?;
   }
 
   let mut tx = state.db.begin().await?;
 
   if let Some(ref pw) = req.password {
-    if pw.len() < 6 {
-      return Err(AuthError::ValidationFailed(
-        "Password must be at least 6 characters.".to_string(),
-      ));
-    }
-    if pw.len() > 128 {
-      return Err(AuthError::ValidationFailed(
-        "Password must not exceed 128 characters.".to_string(),
-      ));
-    }
+    validate_password_policy(pw)?;
     let hashed = password::hash_password(pw)?;
     sqlx::query("UPDATE auth.users SET encrypted_password = $1, updated_at = $2 WHERE id = $3")
       .bind(hashed)
@@ -128,6 +131,11 @@ pub async fn update_user(
   }
 
   if let Some(ref phone) = req.phone {
+    if !is_valid_e164_phone(phone) {
+      return Err(AuthError::ValidationFailed(
+        "Phone must be a valid E.164 number".to_string(),
+      ));
+    }
     // Clear phone_confirmed_at since the phone number has changed (requires re-verification)
     sqlx::query("UPDATE auth.users SET phone = $1, phone_confirmed_at = NULL, updated_at = $2 WHERE id = $3")
       .bind(phone)
@@ -148,35 +156,4 @@ pub async fn update_user(
     .ok_or(AuthError::UserNotFound)?;
 
   Ok(Json(UserResponse::from_user(&state.db, user).await?))
-}
-
-async fn require_sensitive_change_reauth(
-  state: &AppState,
-  claims: &crate::auth::jwt::Claims,
-  user: &User,
-  current_password: Option<&str>,
-) -> Result<()> {
-  let has_verified_mfa = sqlx::query_as::<_, MfaFactorRow>(
-    "SELECT id, user_id, friendly_name, factor_type::text as factor_type, status::text as status, secret, created_at, updated_at, last_challenged_at FROM auth.mfa_factors WHERE user_id = $1 AND status = 'verified'::auth.factor_status LIMIT 1",
-  )
-  .bind(user.id)
-  .fetch_optional(&state.db)
-  .await?
-  .is_some();
-
-  if has_verified_mfa && claims.aal != "aal2" {
-    return Err(AuthError::NotAuthorized);
-  }
-
-  if let Some(hash) = user.encrypted_password.as_deref() {
-    let current_password = current_password
-      .ok_or_else(|| AuthError::ValidationFailed("current_password is required".to_string()))?;
-    if !password::verify_password(current_password, hash)? {
-      return Err(AuthError::InvalidCredentials);
-    }
-  } else if !has_verified_mfa {
-    return Err(AuthError::NotAuthorized);
-  }
-
-  Ok(())
 }

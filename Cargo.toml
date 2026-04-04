@@ -41,5 +41,8 @@ tower-http = { version = "0.6", features = ["timeout", "trace", "cors"] }
 axum = { version = "0.8.1", features = ["tracing"] }
 lettre = { version = "0.11", features = ["tokio1-native-tls"] }
 
+[target.'cfg(unix)'.dependencies]
+sd-notify = "0.5"
+
 [dev-dependencies]
 http-body-util = "0.1"

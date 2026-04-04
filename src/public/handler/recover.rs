@@ -2,7 +2,10 @@ use axum::Json;
 use axum::extract::State;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use chrono::Utc;
+use chrono::{
+  Duration,
+  Utc,
+};
 use rand::RngCore;
 use serde::Deserialize;
 
@@ -10,6 +13,8 @@ use crate::error::Result;
 use crate::mailer::EmailKind;
 use crate::public::handler::signup::is_valid_email;
 use crate::state::AppState;
+
+pub(crate) const EMAIL_TOKEN_COOLDOWN_SECONDS: i64 = 60;
 
 #[derive(Debug, Deserialize)]
 pub struct RecoverRequest {
@@ -25,24 +30,30 @@ pub async fn recover(
     return Ok(Json(serde_json::json!({})));
   }
 
-  let user_exists: Option<(uuid::Uuid,)> =
-    sqlx::query_as::<_, (uuid::Uuid,)>("SELECT id FROM auth.users WHERE email = $1")
-      .bind(&req.email)
-      .fetch_optional(&state.db)
-      .await?;
+  let user_exists: Option<(uuid::Uuid, Option<chrono::DateTime<Utc>>)> =
+    sqlx::query_as::<_, (uuid::Uuid, Option<chrono::DateTime<Utc>>)>(
+      "SELECT id, recovery_sent_at FROM auth.users WHERE email = $1",
+    )
+    .bind(&req.email)
+    .fetch_optional(&state.db)
+    .await?;
 
   if user_exists.is_none() {
     // Return 200 regardless to prevent email enumeration
     return Ok(Json(serde_json::json!({})));
   }
 
-  let (user_id,) = user_exists.unwrap();
+  let (user_id, recovery_sent_at) = user_exists.unwrap();
+  let now = Utc::now();
+  if email_token_cooldown_active(recovery_sent_at, now) {
+    tracing::info!("Recovery token regeneration suppressed by cooldown");
+    return Ok(Json(serde_json::json!({})));
+  }
 
   let mut bytes = [0u8; 32];
   rand::rng().fill_bytes(&mut bytes);
   let recovery_token = URL_SAFE_NO_PAD.encode(bytes);
 
-  let now = Utc::now();
   sqlx::query(
     "UPDATE auth.users SET recovery_token = $1, recovery_sent_at = $2, updated_at = $3 WHERE id = $4",
   )
@@ -67,12 +78,42 @@ pub async fn recover(
       )
       .await
     {
-      tracing::error!(error = %e, email = %req.email, "Failed to send recovery email");
+      tracing::error!(error = %e, "Failed to send recovery email");
     }
   } else {
-    tracing::warn!(email = %req.email, "SMTP not configured; recovery email not sent");
+    tracing::warn!("SMTP not configured; recovery email not sent");
   }
-  tracing::info!(email = %req.email, "Password recovery email requested");
+  tracing::info!("Password recovery email requested");
 
   Ok(Json(serde_json::json!({})))
+}
+
+pub(crate) fn email_token_cooldown_active(
+  sent_at: Option<chrono::DateTime<Utc>>,
+  now: chrono::DateTime<Utc>,
+) -> bool {
+  sent_at.is_some_and(|sent_at| sent_at > now - Duration::seconds(EMAIL_TOKEN_COOLDOWN_SECONDS))
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn cooldown_is_active_within_window() {
+    let now = Utc::now();
+    assert!(email_token_cooldown_active(
+      Some(now - Duration::seconds(EMAIL_TOKEN_COOLDOWN_SECONDS - 1)),
+      now
+    ));
+  }
+
+  #[test]
+  fn cooldown_is_inactive_after_window() {
+    let now = Utc::now();
+    assert!(!email_token_cooldown_active(
+      Some(now - Duration::seconds(EMAIL_TOKEN_COOLDOWN_SECONDS + 1)),
+      now
+    ));
+  }
 }

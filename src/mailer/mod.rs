@@ -21,6 +21,7 @@
 //! | `confirm.html/txt` | `{{site_name}}`, `{{confirmation_url}}`, `{{email}}`      |
 //! | `recovery.html/txt`| `{{site_name}}`, `{{recovery_url}}`, `{{email}}`          |
 //! | `magic_link.html/txt` | `{{site_name}}`, `{{magic_link_url}}`, `{{email}}`     |
+//! | `reauthenticate.html/txt` | `{{site_name}}`, `{{reauthentication_token}}`, `{{email}}`, `{{expires_minutes}}` |
 
 use std::path::Path;
 
@@ -133,6 +134,35 @@ const DEFAULT_MAGIC_LINK_HTML: &str = r#"<!DOCTYPE html>
 
 const DEFAULT_MAGIC_LINK_TXT: &str = "Sign in to {{site_name}}\n\nClick the link below to sign in to your account (this link can only be used once):\n\n{{magic_link_url}}\n\nThis link expires in 24 hours. If you didn't request this, you can safely ignore this email.\n";
 
+const DEFAULT_REAUTH_HTML: &str = r#"<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Confirm this sensitive action</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f9fafb; margin: 0; padding: 40px 20px; }
+    .card { background: white; border-radius: 8px; max-width: 480px; margin: 0 auto; padding: 40px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+    h2 { margin: 0 0 16px; font-size: 22px; color: #111; }
+    p { margin: 0 0 16px; color: #555; line-height: 1.6; }
+    .code { display: inline-block; padding: 12px 16px; background: #f3f4f6; color: #111; border-radius: 6px; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 16px; letter-spacing: .04em; }
+    .footer { margin-top: 32px; font-size: 12px; color: #999; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Confirm this sensitive action</h2>
+    <p>Use the token below to confirm the sensitive action for <strong>{{email}}</strong> on <strong>{{site_name}}</strong>.</p>
+    <p><span class="code">{{reauthentication_token}}</span></p>
+    <div class="footer">
+      <p>This token expires in {{expires_minutes}} minutes. If you didn't request this, you can safely ignore this email.</p>
+    </div>
+  </div>
+</body>
+</html>"#;
+
+const DEFAULT_REAUTH_TXT: &str = "Confirm this sensitive action for {{site_name}}\n\nUse this token for {{email}}:\n\n{{reauthentication_token}}\n\nThis token expires in {{expires_minutes}} minutes. If you didn't request this, you can safely ignore this email.\n";
+
 // ── Email kind ───────────────────────────────────────────────────────────────
 
 /// Identifies which email to send.  Each variant maps to a pair of template
@@ -144,6 +174,8 @@ pub enum EmailKind {
   Recovery,
   /// Passwordless magic-link for sign-in / OTP flows.
   MagicLink,
+  /// Re-authentication token for sensitive actions.
+  Reauthentication,
 }
 
 impl EmailKind {
@@ -153,6 +185,7 @@ impl EmailKind {
       Self::Confirmation => "confirm",
       Self::Recovery => "recovery",
       Self::MagicLink => "magic_link",
+      Self::Reauthentication => "reauthenticate",
     }
   }
 
@@ -162,6 +195,7 @@ impl EmailKind {
       Self::Confirmation => "Confirm your email address",
       Self::Recovery => "Reset your password",
       Self::MagicLink => "Your magic link",
+      Self::Reauthentication => "Confirm this sensitive action",
     }
   }
 
@@ -170,6 +204,7 @@ impl EmailKind {
       Self::Confirmation => DEFAULT_CONFIRM_HTML,
       Self::Recovery => DEFAULT_RECOVERY_HTML,
       Self::MagicLink => DEFAULT_MAGIC_LINK_HTML,
+      Self::Reauthentication => DEFAULT_REAUTH_HTML,
     }
   }
 
@@ -178,6 +213,7 @@ impl EmailKind {
       Self::Confirmation => DEFAULT_CONFIRM_TXT,
       Self::Recovery => DEFAULT_RECOVERY_TXT,
       Self::MagicLink => DEFAULT_MAGIC_LINK_TXT,
+      Self::Reauthentication => DEFAULT_REAUTH_TXT,
     }
   }
 }

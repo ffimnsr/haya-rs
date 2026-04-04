@@ -20,6 +20,15 @@ use url::Url;
 use super::handler;
 use crate::state::AppState;
 
+fn dev_mode_enabled() -> bool {
+  std::env::var("HAYA_DEV_MODE")
+    .map(|value| {
+      let value = value.trim();
+      value == "1" || value.eq_ignore_ascii_case("true")
+    })
+    .unwrap_or(false)
+}
+
 fn build_cors_layer() -> CorsLayer {
   let allowed_origins = std::env::var("CORS_ALLOWED_ORIGINS").unwrap_or_default();
   let origins: Vec<HeaderValue> = allowed_origins
@@ -30,7 +39,7 @@ fn build_cors_layer() -> CorsLayer {
     .collect();
 
   let allow_origin = if origins.is_empty() {
-    if std::env::var("HAYA_DEV_MODE").is_ok() {
+    if dev_mode_enabled() {
       // Development fallback: CORS is `*` when no explicit origins are configured.
       AllowOrigin::any()
     } else {
@@ -87,6 +96,7 @@ pub fn create_router(state: AppState) -> Router {
     .route("/token", post(handler::token::token))
     .route("/verify", post(handler::verify::verify))
     .route("/recover", post(handler::recover::recover))
+    .route("/reauthenticate", post(handler::reauthenticate::reauthenticate))
     .route("/resend", post(handler::resend::resend))
     .route("/magiclink", post(handler::otp::magiclink))
     .route("/otp", post(handler::otp::send_otp))

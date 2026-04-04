@@ -289,9 +289,10 @@ pub async fn exchange_code(
   if !response.status().is_success() {
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
-    return Err(AuthError::ValidationFailed(format!(
-      "OIDC token exchange failed with status {status}: {body}"
-    )));
+    tracing::warn!(%status, body = %body, "OIDC token exchange failed");
+    return Err(AuthError::ValidationFailed(
+      "OIDC token exchange failed".to_string(),
+    ));
   }
 
   response

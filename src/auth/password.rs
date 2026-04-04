@@ -26,6 +26,11 @@ pub fn verify_password(password: &str, hash: &str) -> Result<bool, AuthError> {
   )
 }
 
+pub fn burn_password_work(password: &str) -> Result<(), AuthError> {
+  let _ = hash_password(password)?;
+  Ok(())
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -36,5 +41,10 @@ mod tests {
     let hash = hash_password(password).unwrap();
     assert!(verify_password(password, &hash).unwrap());
     assert!(!verify_password("wrong-password", &hash).unwrap());
+  }
+
+  #[test]
+  fn test_burn_password_work_succeeds() {
+    burn_password_work("super-secret-password").unwrap();
   }
 }

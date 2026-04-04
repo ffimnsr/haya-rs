@@ -84,12 +84,12 @@ pub async fn send_otp(
         )
         .await
       {
-        tracing::error!(error = %e, %email, "Failed to send magic link email");
+        tracing::error!(error = %e, "Failed to send magic link email");
       }
     } else {
-      tracing::warn!(%email, "SMTP not configured; magic link email not sent");
+      tracing::warn!("SMTP not configured; magic link email not sent");
     }
-    tracing::info!(%email, "OTP/magic link token generated");
+    tracing::info!("OTP/magic link token generated");
   }
 
   Ok(Json(serde_json::json!({})))
