@@ -15,6 +15,7 @@ use tower_http::cors::{
 };
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
+use url::Url;
 
 use super::handler;
 use crate::state::AppState;
@@ -29,9 +30,12 @@ fn build_cors_layer() -> CorsLayer {
     .collect();
 
   let allow_origin = if origins.is_empty() {
-    // Default: permissive only when no origins are configured
-    // In production, CORS_ALLOWED_ORIGINS should be set explicitly
-    AllowOrigin::any()
+    if std::env::var("HAYA_DEV_MODE").is_ok() {
+      // Development fallback: CORS is `*` when no explicit origins are configured.
+      AllowOrigin::any()
+    } else {
+      AllowOrigin::list(default_cors_origins())
+    }
   } else {
     AllowOrigin::list(origins)
   };
@@ -52,6 +56,25 @@ fn build_cors_layer() -> CorsLayer {
     ])
     .allow_credentials(false)
     .max_age(Duration::from_secs(3600))
+}
+
+fn default_cors_origins() -> Vec<HeaderValue> {
+  let site_url = std::env::var("SITE_URL").unwrap_or_else(|_| "http://localhost:9999".to_string());
+  cors_origin_from_url(&site_url)
+    .or_else(|| cors_origin_from_url("http://localhost:9999"))
+    .into_iter()
+    .collect()
+}
+
+fn cors_origin_from_url(value: &str) -> Option<HeaderValue> {
+  let url = Url::parse(value).ok()?;
+  let host = url.host_str()?;
+  let mut origin = format!("{}://{}", url.scheme(), host);
+  if let Some(port) = url.port() {
+    origin.push(':');
+    origin.push_str(&port.to_string());
+  }
+  origin.parse::<HeaderValue>().ok()
 }
 
 pub fn create_router(state: AppState) -> Router {

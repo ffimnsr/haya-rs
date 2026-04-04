@@ -1,4 +1,5 @@
 mod auth;
+mod cli;
 mod db;
 mod defaults;
 mod error;
@@ -13,16 +14,23 @@ mod utils;
 use std::env;
 use std::sync::Arc;
 
+use clap::Parser;
+use tokio::sync::RwLock;
+
 use crate::auth::{
   mfa,
   oidc,
 };
+use crate::cli::Cli;
 use crate::defaults::DEFAULT_DATABASE_URL;
 use crate::mailer::{
   Mailer,
   MailerConfig,
 };
-use crate::state::AppState;
+use crate::state::{
+  AppState,
+  RuntimeConfig,
+};
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
 use url::Url;
@@ -33,6 +41,7 @@ const APP_NAME: &str = env!("CARGO_PKG_NAME");
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
   dotenvy::dotenv().ok();
+  let cli = Cli::parse();
 
   tracing_subscriber::registry()
     .with(
@@ -42,15 +51,36 @@ async fn main() -> anyhow::Result<()> {
     .with(tracing_subscriber::fmt::layer())
     .init();
 
-  let db_url = env::var("DATABASE_URL")
+  let (state, runtime_config) = build_runtime().await?;
+  let version = env!("CARGO_PKG_VERSION");
+  println!("Booting up Haya Auth v{}", version);
+  crate::cli::run(cli, state, runtime_config).await
+}
+
+fn origin_from_url(value: &str) -> anyhow::Result<String> {
+  let url = Url::parse(value)?;
+  let host = url
+    .host_str()
+    .ok_or_else(|| anyhow::anyhow!("URL must include a host: {value}"))?;
+  let mut origin = format!("{}://{}", url.scheme(), host);
+  if let Some(port) = url.port() {
+    origin.push(':');
+    origin.push_str(&port.to_string());
+  }
+  Ok(origin)
+}
+
+async fn build_runtime() -> anyhow::Result<(AppState, RuntimeConfig)> {
+  let database_url = env::var("DATABASE_URL")
     .or_else(|_| env::var("DEFAULT_DATABASE_URL"))
     .unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string());
 
-  let db = db::init_pool(&db_url).await?;
+  let db = db::init_pool(&database_url).await?;
   let http_client = reqwest::Client::builder()
     .redirect(reqwest::redirect::Policy::none())
     .build()?;
 
+  let dev_mode = env::var("HAYA_DEV_MODE").is_ok();
   let jwt_secret = match env::var("JWT_SECRET") {
     Ok(secret) if secret.len() >= 32 => secret,
     Ok(secret) if secret.is_empty() => {
@@ -60,7 +90,7 @@ async fn main() -> anyhow::Result<()> {
       anyhow::bail!("JWT_SECRET must be at least 32 characters long");
     },
     Err(_) => {
-      if env::var("HAYA_DEV_MODE").is_ok() {
+      if dev_mode {
         let dev_secret = "super-secret-jwt-token-with-at-least-32-characters-long";
         tracing::warn!(
           "⚠️  JWT_SECRET not set! Using insecure development secret. \
@@ -83,14 +113,14 @@ async fn main() -> anyhow::Result<()> {
     .and_then(|v| v.parse().ok())
     .unwrap_or(3600);
 
-  let mfa_encryption_key = match env::var("MFA_ENCRYPTION_KEY") {
-    Ok(value) if !value.trim().is_empty() => mfa::derive_encryption_key(&value),
+  let (mfa_encryption_key, mfa_key_source) = match env::var("MFA_ENCRYPTION_KEY") {
+    Ok(value) if !value.trim().is_empty() => (mfa::derive_encryption_key(&value), "env"),
     Ok(_) => anyhow::bail!("MFA_ENCRYPTION_KEY must not be empty when set"),
     Err(_) => {
       tracing::warn!(
         "MFA_ENCRYPTION_KEY not set; deriving MFA encryption key from JWT_SECRET. Set MFA_ENCRYPTION_KEY explicitly in production."
       );
-      mfa::derive_encryption_key(&jwt_secret)
+      (mfa::derive_encryption_key(&jwt_secret), "jwt_secret")
     },
   };
 
@@ -100,11 +130,19 @@ async fn main() -> anyhow::Result<()> {
     .unwrap_or(1_209_600);
 
   let site_url = env::var("SITE_URL").unwrap_or_else(|_| "http://localhost:9999".to_string());
+  let cors_allowed_origins = env::var("CORS_ALLOWED_ORIGINS")
+    .map(|value| {
+      value
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>()
+    })
+    .unwrap_or_default();
   let mut allowed_redirect_origins = vec![origin_from_url(&site_url)?];
-  if let Ok(value) = env::var("CORS_ALLOWED_ORIGINS") {
-    for origin in value.split(',').map(str::trim).filter(|value| !value.is_empty()) {
-      allowed_redirect_origins.push(origin_from_url(origin)?);
-    }
+  for origin in &cors_allowed_origins {
+    allowed_redirect_origins.push(origin_from_url(origin)?);
   }
   allowed_redirect_origins.sort();
   allowed_redirect_origins.dedup();
@@ -117,13 +155,13 @@ async fn main() -> anyhow::Result<()> {
     .ok()
     .and_then(|v| v.parse().ok())
     .unwrap_or_else(Uuid::new_v4);
-  let oidc_providers = oidc::load_providers_from_env()?;
+  let oidc_providers = oidc::load_providers_from_db(&db).await?;
 
   let mailer_autoconfirm = env::var("MAILER_AUTOCONFIRM")
     .map(|v| v.to_lowercase() == "true" || v == "1")
     .unwrap_or(false);
 
-  let mailer: Option<Arc<Mailer>> = if let Ok(smtp_host) = env::var("SMTP_HOST") {
+  let (mailer, smtp_configured): (Option<Arc<Mailer>>, bool) = if let Ok(smtp_host) = env::var("SMTP_HOST") {
     let smtp_port: u16 = env::var("SMTP_PORT")
       .ok()
       .and_then(|v| v.parse().ok())
@@ -149,52 +187,53 @@ async fn main() -> anyhow::Result<()> {
     }) {
       Ok(m) => {
         tracing::info!("SMTP mailer ready");
-        Some(Arc::new(m))
+        (Some(Arc::new(m)), true)
       },
       Err(e) => {
         tracing::warn!(error = %e, "Failed to configure SMTP mailer; emails will not be sent");
-        None
+        (None, false)
       },
     }
   } else {
     tracing::info!("SMTP_HOST not set; email sending is disabled");
-    None
+    (None, false)
   };
 
+  let port: u16 = env::var("PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(9999);
+  let pid_file = env::var("HAYA_PID_FILE").unwrap_or_else(|_| "/tmp/haya.pid".to_string());
   let state = AppState {
     db,
     http_client,
-    jwt_secret,
+    jwt_secret: jwt_secret.clone(),
     mfa_encryption_key,
     jwt_exp,
     refresh_token_exp,
-    site_url,
-    allowed_redirect_origins,
-    site_name,
-    issuer,
+    site_url: site_url.clone(),
+    allowed_redirect_origins: allowed_redirect_origins.clone(),
+    site_name: site_name.clone(),
+    issuer: issuer.clone(),
     instance_id,
-    oidc_providers,
+    oidc_providers: Arc::new(RwLock::new(oidc_providers)),
     mailer_autoconfirm,
     mailer,
   };
+  let runtime_config = RuntimeConfig {
+    port,
+    database_url,
+    site_url,
+    allowed_redirect_origins,
+    cors_allowed_origins,
+    site_name,
+    issuer,
+    jwt_exp,
+    refresh_token_exp,
+    pid_file,
+    jwt_secret_len: jwt_secret.len(),
+    mailer_autoconfirm,
+    smtp_configured,
+    dev_mode,
+    mfa_key_source,
+  };
 
-  let version = env!("CARGO_PKG_VERSION");
-  println!("Booting up Haya Auth v{}", version);
-
-  let port: u16 = env::var("PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(9999);
-
-  public::serve(port, state).await
-}
-
-fn origin_from_url(value: &str) -> anyhow::Result<String> {
-  let url = Url::parse(value)?;
-  let host = url
-    .host_str()
-    .ok_or_else(|| anyhow::anyhow!("URL must include a host: {value}"))?;
-  let mut origin = format!("{}://{}", url.scheme(), host);
-  if let Some(port) = url.port() {
-    origin.push(':');
-    origin.push_str(&port.to_string());
-  }
-  Ok(origin)
+  Ok((state, runtime_config))
 }

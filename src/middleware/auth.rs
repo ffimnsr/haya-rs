@@ -6,6 +6,7 @@ use crate::auth::{
   session,
 };
 use crate::error::AuthError;
+use crate::model::User;
 use crate::state::AppState;
 
 pub struct AuthUser(pub jwt::Claims);
@@ -20,6 +21,9 @@ impl FromRequestParts<AppState> for AuthUser {
       .map_err(|_| AuthError::NotAuthorized)?
       .claims;
     session::ensure_active_session(state, &claims)
+      .await
+      .map_err(|_| AuthError::NotAuthorized)?;
+    session::load_current_user(state, &claims)
       .await
       .map_err(|_| AuthError::NotAuthorized)?;
     Ok(AuthUser(claims))
@@ -37,7 +41,11 @@ impl FromRequestParts<AppState> for AdminUser {
     session::ensure_active_session(state, &claims)
       .await
       .map_err(|_| AuthError::NotAuthorized)?;
-    if claims.role != "service_role" && claims.role != "supabase_admin" {
+    let user: User = session::load_current_user(state, &claims)
+      .await
+      .map_err(|_| AuthError::NotAuthorized)?;
+    let role = user.role.as_deref().unwrap_or("authenticated");
+    if role != "service_role" && role != "supabase_admin" {
       return Err(AuthError::NotAdmin);
     }
     Ok(AdminUser(claims))

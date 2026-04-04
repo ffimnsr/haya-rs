@@ -63,9 +63,12 @@ pub async fn authorize(
   let redirect_to = validated_redirect_to(&state, query.redirect_to.as_deref())?;
   let provider = state
     .oidc_providers
+    .read()
+    .await
     .get(&query.provider)
+    .cloned()
     .ok_or_else(|| AuthError::ValidationFailed(format!("Unsupported provider: {}", query.provider)))?;
-  let discovery = oidc::discover_provider(&state.http_client, provider).await?;
+  let discovery = oidc::discover_provider(&state.http_client, &provider).await?;
   let flow = oidc::generate_flow_tokens(provider.pkce);
   let flow_id = Uuid::new_v4();
   let now = Utc::now();
@@ -89,7 +92,7 @@ pub async fn authorize(
   .execute(&state.db)
   .await?;
 
-  let auth_url = oidc::build_authorization_url(&discovery, provider, &flow)?;
+  let auth_url = oidc::build_authorization_url(&discovery, &provider, &flow)?;
   Ok(Redirect::to(auth_url.as_str()))
 }
 
@@ -115,13 +118,16 @@ pub async fn callback(
 
   let provider = state
     .oidc_providers
+    .read()
+    .await
     .get(&flow.provider_type)
+    .cloned()
     .ok_or_else(|| AuthError::ValidationFailed(format!("Unsupported provider: {}", flow.provider_type)))?;
-  let discovery = oidc::discover_provider(&state.http_client, provider).await?;
+  let discovery = oidc::discover_provider(&state.http_client, &provider).await?;
   let token_response = oidc::exchange_code(
     &state.http_client,
     &discovery,
-    provider,
+    &provider,
     &query.code,
     flow.pkce_verifier.as_deref(),
   )
@@ -129,7 +135,7 @@ pub async fn callback(
   let validated = oidc::validate_id_token(
     &state.http_client,
     &discovery,
-    provider,
+    &provider,
     &token_response.id_token,
     flow
       .nonce
@@ -139,8 +145,8 @@ pub async fn callback(
   .await?;
   let userinfo = oidc::fetch_userinfo(&state.http_client, &discovery, &token_response.access_token).await?;
   let profile = oidc::normalize_profile(&validated, userinfo);
-  oidc::enforce_allowed_domains(provider, &profile)?;
-  let user = provision_sso_user(&state, provider, &profile).await?;
+  oidc::enforce_allowed_domains(&provider, &profile)?;
+  let user = provision_sso_user(&state, &provider, &profile).await?;
   ensure_user_signin_allowed(&user)?;
   let factors = mfa::verified_factors_by_user_id(&state.db, user.id).await?;
 
@@ -255,11 +261,7 @@ async fn fetch_user(db: &sqlx::PgPool, user_id: Uuid) -> Result<User> {
 }
 
 fn ensure_user_signin_allowed(user: &User) -> Result<()> {
-  if user.banned_until.map(|value| value > Utc::now()).unwrap_or(false) {
-    return Err(AuthError::UserBanned);
-  }
-
-  Ok(())
+  session::ensure_user_is_active(user)
 }
 
 fn build_redirect_url(redirect_to: String, response: &crate::model::TokenResponse) -> Result<String> {

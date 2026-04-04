@@ -13,6 +13,7 @@ pub type Result<T, E = AuthError> = StdResult<T, E>;
 pub enum AuthError {
   #[error("Invalid credentials")]
   InvalidCredentials,
+  #[allow(dead_code)]
   #[error("Email not confirmed")]
   EmailNotConfirmed,
   #[error("User already exists")]

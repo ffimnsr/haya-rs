@@ -1,5 +1,6 @@
+use sqlx::PgPool;
 use std::collections::HashMap;
-use std::env;
+use uuid::Uuid;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -51,7 +52,7 @@ pub struct OidcFlowTokens {
   pub pkce_verifier: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OidcDiscoveryDocument {
   pub issuer: String,
   pub authorization_endpoint: String,
@@ -103,11 +104,18 @@ pub struct OidcIdTokenClaims {
   pub extra: Map<String, Value>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum OidcProviderEnv {
-  List(Vec<OidcProviderConfig>),
-  Map(HashMap<String, OidcProviderConfig>),
+#[derive(Debug, sqlx::FromRow)]
+struct OidcProviderRow {
+  #[allow(dead_code)]
+  id: Uuid,
+  name: String,
+  issuer: String,
+  client_id: String,
+  client_secret: String,
+  redirect_uri: String,
+  scopes: Value,
+  pkce: bool,
+  allowed_email_domains: Value,
 }
 
 fn default_scopes() -> Vec<String> {
@@ -118,26 +126,18 @@ fn default_true() -> bool {
   true
 }
 
-pub fn load_providers_from_env() -> anyhow::Result<HashMap<String, OidcProviderConfig>> {
-  let raw = match env::var("HAYA_OIDC_PROVIDERS") {
-    Ok(value) if !value.trim().is_empty() => value,
-    _ => return Ok(HashMap::new()),
-  };
+pub async fn load_providers_from_db(db: &PgPool) -> anyhow::Result<HashMap<String, OidcProviderConfig>> {
+  let rows: Vec<OidcProviderRow> = sqlx::query_as::<_, OidcProviderRow>(
+    "SELECT id, name, issuer, client_id, client_secret, redirect_uri, scopes, pkce, allowed_email_domains FROM auth.oidc_providers ORDER BY created_at ASC NULLS LAST, name ASC",
+  )
+  .fetch_all(db)
+  .await?;
 
-  let env_value: OidcProviderEnv = serde_json::from_str(&raw)?;
-  let mut providers = match env_value {
-    OidcProviderEnv::List(list) => list
-      .into_iter()
-      .map(|provider| (provider.name.clone(), provider))
-      .collect::<HashMap<_, _>>(),
-    OidcProviderEnv::Map(map) => map,
-  };
-
-  for (key, provider) in &mut providers {
-    if provider.name.is_empty() {
-      provider.name = key.to_string();
-    }
+  let mut providers = HashMap::new();
+  for row in rows {
+    let provider = row.into_config()?;
     provider.validate()?;
+    providers.insert(provider.name.clone(), provider);
   }
 
   Ok(providers)
@@ -158,6 +158,42 @@ impl OidcProviderConfig {
     Url::parse(&self.redirect_uri)?;
     Ok(())
   }
+}
+
+impl OidcProviderRow {
+  fn into_config(self) -> anyhow::Result<OidcProviderConfig> {
+    let scopes = json_array_to_strings(self.scopes, "scopes")?;
+    let allowed_email_domains = json_array_to_strings(self.allowed_email_domains, "allowed_email_domains")?;
+
+    Ok(OidcProviderConfig {
+      name: self.name,
+      issuer: self.issuer,
+      client_id: self.client_id,
+      client_secret: self.client_secret,
+      redirect_uri: self.redirect_uri,
+      scopes: if scopes.is_empty() {
+        default_scopes()
+      } else {
+        scopes
+      },
+      pkce: self.pkce,
+      allowed_email_domains,
+    })
+  }
+}
+
+fn json_array_to_strings(value: Value, field_name: &str) -> anyhow::Result<Vec<String>> {
+  let Value::Array(items) = value else {
+    anyhow::bail!("OIDC provider field {field_name} must be a JSON array");
+  };
+
+  items
+    .into_iter()
+    .map(|item| match item {
+      Value::String(value) => Ok(value),
+      _ => anyhow::bail!("OIDC provider field {field_name} must contain only strings"),
+    })
+    .collect()
 }
 
 pub fn generate_flow_tokens(use_pkce: bool) -> OidcFlowTokens {
@@ -434,15 +470,23 @@ mod tests {
   use super::*;
 
   #[test]
-  fn loads_provider_config_from_json_list() {
-    let raw = r#"[{"name":"acme","issuer":"https://issuer.example.com","client_id":"abc","client_secret":"secret","redirect_uri":"https://app.example.com/callback"}]"#;
-    let env_value: OidcProviderEnv = serde_json::from_str(raw).unwrap();
-    let providers = match env_value {
-      OidcProviderEnv::List(list) => list,
-      OidcProviderEnv::Map(_) => unreachable!(),
+  fn converts_row_to_provider_config() {
+    let row = OidcProviderRow {
+      id: Uuid::new_v4(),
+      name: "acme".to_string(),
+      issuer: "https://issuer.example.com".to_string(),
+      client_id: "abc".to_string(),
+      client_secret: "secret".to_string(),
+      redirect_uri: "https://app.example.com/callback".to_string(),
+      scopes: serde_json::json!(["openid", "email", "profile"]),
+      pkce: true,
+      allowed_email_domains: serde_json::json!(["example.com"]),
     };
-    assert_eq!(providers[0].scopes, default_scopes());
-    assert!(providers[0].pkce);
+
+    let provider = row.into_config().unwrap();
+    assert_eq!(provider.scopes, default_scopes());
+    assert!(provider.pkce);
+    assert_eq!(provider.allowed_email_domains, vec!["example.com".to_string()]);
   }
 
   #[test]

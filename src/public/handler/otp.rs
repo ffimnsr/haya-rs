@@ -22,6 +22,7 @@ pub struct OtpRequest {
   #[allow(dead_code)]
   pub phone: Option<String>,
   pub create_user: Option<bool>,
+  #[allow(dead_code)]
   pub data: Option<serde_json::Value>,
 }
 
@@ -38,7 +39,7 @@ pub async fn send_otp(
     if !is_valid_email(email) {
       return Err(AuthError::ValidationFailed("Invalid email format".to_string()));
     }
-    let create_user = req.create_user.unwrap_or(true);
+    let _create_user = req.create_user.unwrap_or(false);
 
     let existing: Option<(Uuid,)> =
       sqlx::query_as::<_, (Uuid,)>("SELECT id FROM auth.users WHERE email = $1")
@@ -48,28 +49,8 @@ pub async fn send_otp(
 
     let user_id = if let Some((id,)) = existing {
       id
-    } else if create_user {
-      let id = Uuid::new_v4();
-      let now = Utc::now();
-      let user_metadata = req.data.clone().unwrap_or(serde_json::json!({}));
-      let app_metadata = serde_json::json!({"provider": "email", "providers": ["email"]});
-      sqlx::query(
-                "INSERT INTO auth.users (id, instance_id, aud, role, email, raw_app_meta_data, raw_user_meta_data, is_anonymous, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
-            )
-            .bind(id)
-            .bind(state.instance_id)
-            .bind("authenticated")
-            .bind("authenticated")
-            .bind(email)
-            .bind(&app_metadata)
-            .bind(&user_metadata)
-            .bind(false)
-            .bind(now)
-            .bind(now)
-            .execute(&state.db)
-            .await?;
-      id
     } else {
+      // Do not create auth.users rows until the mailbox is proven by a completed verification flow.
       return Ok(Json(serde_json::json!({})));
     };
 
@@ -121,7 +102,7 @@ pub async fn magiclink(
   let otp_req = OtpRequest {
     email: Some(req.email),
     phone: None,
-    create_user: Some(true),
+    create_user: Some(false),
     data: None,
   };
   send_otp(State(state), Json(otp_req)).await

@@ -349,7 +349,7 @@ pub async fn admin_delete_user(
   Ok(StatusCode::NO_CONTENT)
 }
 
-fn parse_ban_duration(duration: &str) -> Result<i64, AuthError> {
+pub(crate) fn parse_ban_duration(duration: &str) -> Result<i64, AuthError> {
   if let Some(hours) = duration.strip_suffix('h') {
     hours
       .parse::<i64>()
@@ -373,7 +373,7 @@ fn parse_ban_duration(duration: &str) -> Result<i64, AuthError> {
   }
 }
 
-fn validate_password_policy(password: &str) -> Result<(), AuthError> {
+pub(crate) fn validate_password_policy(password: &str) -> Result<(), AuthError> {
   if password.len() < 6 {
     return Err(AuthError::ValidationFailed(
       "Password must be at least 6 characters.".to_string(),
@@ -387,7 +387,7 @@ fn validate_password_policy(password: &str) -> Result<(), AuthError> {
   Ok(())
 }
 
-fn validate_role(role: &str) -> Result<(), AuthError> {
+pub(crate) fn validate_role(role: &str) -> Result<(), AuthError> {
   if ALLOWED_USER_ROLES.contains(&role) {
     return Ok(());
   }

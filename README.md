@@ -59,6 +59,18 @@ cargo run
 
 The server listens on `PORT`, which defaults to `9999`.
 
+You can also run the binary in CLI mode against the configured PostgreSQL database:
+
+```bash
+cargo run -- status
+cargo run -- settings
+cargo run -- sso list
+cargo run -- user list
+cargo run -- admin list
+```
+
+Without a subcommand, `haya` still starts the HTTP server.
+
 ### 5. Verify the instance
 
 ```bash
@@ -97,6 +109,75 @@ Admin routes:
 - `PUT /admin/users/:id`
 - `DELETE /admin/users/:id`
 
+## CLI Commands
+
+The CLI talks directly to the configured database defined by `DATABASE_URL`, so it works whether or not an HTTP server is already running.
+
+Examples:
+
+```bash
+haya status
+haya settings
+haya config validate
+haya db status
+haya db migrate
+haya db vacuum-token-tables
+haya sso list
+haya sso show acme
+haya sso add --name acme --issuer https://id.example.com/realms/acme --client-id haya --client-secret secret --redirect-uri http://localhost:9999/callback --allowed-domain example.com
+haya sso test acme
+haya sso discover acme
+haya sso sync-cache
+haya reload
+haya doctor
+haya audit list
+haya audit user user@example.com
+haya audit tail --follow
+haya mfa list user@example.com
+haya mfa delete user@example.com --factor-id 00000000-0000-0000-0000-000000000000
+haya mfa reset user@example.com
+haya user show user@example.com
+haya user sessions user@example.com
+haya user reset-password user@example.com --send-link
+haya session list --user user@example.com
+haya session show 00000000-0000-0000-0000-000000000000
+haya session revoke-others --session-id 00000000-0000-0000-0000-000000000000
+haya session revoke --session-id 00000000-0000-0000-0000-000000000000
+haya token inspect eyJ...
+haya token issue user@example.com --method admin_cli --aal aal1
+haya token cleanup --dry-run
+
+haya admin list
+haya admin add --email admin@example.com --password 'change-me' --role service_role --verified
+haya admin update admin@example.com --role supabase_admin --ban-duration 24h
+haya admin verify admin@example.com
+haya admin delete admin@example.com
+
+haya user list --email-like example.com
+haya user add --email user@example.com --password 'change-me'
+haya user update user@example.com --phone '+15555550123' --unban
+haya user verify user@example.com
+haya user delete user@example.com
+```
+
+Supported command groups:
+
+- `haya serve`
+- `haya status`
+- `haya settings`
+- `haya config validate`
+- `haya db status|migrate|vacuum-token-tables`
+- `haya reload`
+- `haya doctor`
+- `haya audit list|user|tail`
+- `haya mfa list|delete|reset`
+- `haya session list|show|revoke|revoke-others`
+- `haya session show`
+- `haya token cleanup|issue|inspect`
+- `haya sso list|show|add|update|delete|test|discover|sync-cache`
+- `haya admin list|add|update|verify|delete`
+- `haya user list|show|sessions|reset-password|add|update|verify|delete`
+
 ## Configuration Reference
 
 ### Required
@@ -117,28 +198,29 @@ Admin routes:
 - `INSTANCE_ID`: explicit UUID for the auth instance.
 - `MAILER_AUTOCONFIRM`: enables automatic confirmation when set to `true` or `1`.
 - `CORS_ALLOWED_ORIGINS`: comma-separated list of allowed origins. Also used as the allowlist for OIDC `redirect_to` origins alongside `SITE_URL`. If omitted, CORS is permissive.
-- `HAYA_OIDC_PROVIDERS`: JSON array or object of OIDC provider configs. Each config includes `name`, `issuer`, `client_id`, `client_secret`, `redirect_uri`, optional `scopes`, optional `pkce`, and optional `allowed_email_domains`.
 - `HAYA_DEV_MODE`: enables an insecure built-in JWT secret for local development only.
+- `HAYA_PID_FILE`: overrides the pid file path used by `haya reload` and `haya doctor`. Defaults to `/tmp/haya.pid`.
 
 ### OIDC SSO
 
-Haya can initiate a generic OIDC login flow for enterprise identity providers such as Keycloak, Okta, Entra ID, and Auth0.
+Haya can initiate a generic OIDC login flow for enterprise identity providers such as Keycloak, Okta, Entra ID, and Auth0. Providers are now stored in PostgreSQL and managed with the CLI.
 
-Example configuration:
+Add a provider:
 
 ```bash
-export HAYA_OIDC_PROVIDERS='[
-  {
-    "name": "acme",
-    "issuer": "https://id.example.com/realms/acme",
-    "client_id": "haya",
-    "client_secret": "replace-me",
-    "redirect_uri": "http://localhost:9999/callback",
-    "scopes": ["openid", "email", "profile"],
-    "pkce": true,
-    "allowed_email_domains": ["example.com"]
-  }
-]'
+haya sso add \
+  --name acme \
+  --issuer https://id.example.com/realms/acme \
+  --client-id haya \
+  --client-secret replace-me \
+  --redirect-uri http://localhost:9999/callback \
+  --allowed-domain example.com
+```
+
+If the server is already running, reload the in-memory provider cache:
+
+```bash
+haya reload
 ```
 
 Start the browser flow with:

@@ -193,3 +193,30 @@ pub async fn ensure_active_session(state: &AppState, claims: &jwt::Claims) -> Re
 
   Ok(session)
 }
+
+pub async fn load_current_user(state: &AppState, claims: &jwt::Claims) -> Result<User> {
+  let user_id = claims.sub.parse::<Uuid>().map_err(|_| AuthError::NotAuthorized)?;
+  let user: User = sqlx::query_as::<_, User>(
+    "SELECT id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_sso_user, is_anonymous, banned_until, deleted_at, created_at, updated_at FROM auth.users WHERE id = $1",
+  )
+  .bind(user_id)
+  .fetch_optional(&state.db)
+  .await?
+  .ok_or(AuthError::NotAuthorized)?;
+
+  ensure_user_is_active(&user)?;
+
+  Ok(user)
+}
+
+pub fn ensure_user_is_active(user: &User) -> Result<()> {
+  if user.deleted_at.is_some() {
+    return Err(AuthError::NotAuthorized);
+  }
+
+  if user.banned_until.map(|value| value > Utc::now()).unwrap_or(false) {
+    return Err(AuthError::UserBanned);
+  }
+
+  Ok(())
+}

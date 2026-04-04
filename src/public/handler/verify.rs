@@ -49,13 +49,7 @@ async fn handle_signup_verify(state: AppState, req: VerifyRequest) -> Result<Jso
 
 async fn handle_recovery_verify(state: AppState, req: VerifyRequest) -> Result<Json<VerifyGrantResponse>> {
   let user = consume_recovery_token(&state, &req.token, Utc::now()).await?;
-
-  // Reject banned users before granting a new session
-  if let Some(banned_until) = user.banned_until {
-    if banned_until > Utc::now() {
-      return Err(AuthError::UserBanned);
-    }
-  }
+  session::ensure_user_is_active(&user)?;
 
   let factors = mfa::verified_factors_by_user_id(&state.db, user.id).await?;
   if !factors.is_empty() {
@@ -70,12 +64,7 @@ async fn handle_recovery_verify(state: AppState, req: VerifyRequest) -> Result<J
 
 async fn handle_magiclink_verify(state: AppState, req: VerifyRequest) -> Result<Json<VerifyGrantResponse>> {
   let user = consume_confirmation_token(&state, &req.token, Utc::now()).await?;
-
-  if let Some(banned_until) = user.banned_until {
-    if banned_until > Utc::now() {
-      return Err(AuthError::UserBanned);
-    }
-  }
+  session::ensure_user_is_active(&user)?;
 
   let factors = mfa::verified_factors_by_user_id(&state.db, user.id).await?;
   if !factors.is_empty() {

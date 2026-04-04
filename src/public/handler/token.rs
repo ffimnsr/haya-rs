@@ -69,10 +69,12 @@ async fn handle_password_grant(state: AppState, body: serde_json::Value) -> Resu
     .await?
     .ok_or(AuthError::InvalidCredentials)?;
 
-  if let Some(banned_until) = user.banned_until {
-    if banned_until > Utc::now() {
-      return Err(AuthError::UserBanned);
-    }
+  if user.deleted_at.is_some() {
+    return Err(AuthError::InvalidCredentials);
+  }
+
+  if user.banned_until.map(|value| value > Utc::now()).unwrap_or(false) {
+    return Err(AuthError::InvalidCredentials);
   }
 
   let hash = user
@@ -86,7 +88,7 @@ async fn handle_password_grant(state: AppState, body: serde_json::Value) -> Resu
 
   // Require email confirmation when mailer_autoconfirm is disabled
   if !state.mailer_autoconfirm && user.email.is_some() && user.email_confirmed_at.is_none() {
-    return Err(AuthError::EmailNotConfirmed);
+    return Err(AuthError::InvalidCredentials);
   }
 
   let factors = mfa::verified_factors_by_user_id(&state.db, user.id).await?;
@@ -144,13 +146,9 @@ async fn handle_refresh_grant(state: AppState, body: serde_json::Value) -> Resul
     .await?
     .ok_or(AuthError::UserNotFound)?;
 
-  // Reject banned users before issuing a new token
-  if let Some(banned_until) = user.banned_until {
-    if banned_until > Utc::now() {
-      return Err(AuthError::UserBanned);
-    }
-  }
+  session::ensure_user_is_active(&user)?;
 
+  // Reject banned users before issuing a new token
   // Perform token rotation atomically: revoke old, insert new, update session.
   let new_refresh_token = session::generate_refresh_token();
 
