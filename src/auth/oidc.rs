@@ -357,8 +357,8 @@ pub async fn validate_id_token(
 
   let key = DecodingKey::from_jwk(jwk).map_err(|e| AuthError::InternalError(e.to_string()))?;
   let mut validation = Validation::new(header.alg);
-  validation.set_audience(&[config.client_id.clone()]);
-  validation.set_issuer(&[discovery.issuer.clone()]);
+  validation.set_audience(std::slice::from_ref(&config.client_id));
+  validation.set_issuer(std::slice::from_ref(&discovery.issuer));
 
   let raw_claims = decode::<Value>(id_token, &key, &validation)
     .map_err(|_| AuthError::InvalidToken)?

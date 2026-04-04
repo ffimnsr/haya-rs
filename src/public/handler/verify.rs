@@ -44,7 +44,7 @@ pub async fn verify(
 async fn handle_signup_verify(state: AppState, req: VerifyRequest) -> Result<Json<VerifyGrantResponse>> {
   let user = consume_confirmation_token(&state, &req.token, Utc::now()).await?;
   let user_response = UserResponse::from_user(&state.db, user).await?;
-  Ok(Json(VerifyGrantResponse::User(user_response)))
+  Ok(Json(VerifyGrantResponse::User(Box::new(user_response))))
 }
 
 async fn handle_recovery_verify(state: AppState, req: VerifyRequest) -> Result<Json<VerifyGrantResponse>> {
@@ -59,7 +59,7 @@ async fn handle_recovery_verify(state: AppState, req: VerifyRequest) -> Result<J
 
   let response =
     session::issue_session_with_context(&state, &user, "aal1", None, vec!["recovery".to_string()]).await?;
-  Ok(Json(VerifyGrantResponse::Token(response)))
+  Ok(Json(VerifyGrantResponse::Token(Box::new(response))))
 }
 
 async fn handle_magiclink_verify(state: AppState, req: VerifyRequest) -> Result<Json<VerifyGrantResponse>> {
@@ -74,7 +74,7 @@ async fn handle_magiclink_verify(state: AppState, req: VerifyRequest) -> Result<
 
   let response =
     session::issue_session_with_context(&state, &user, "aal1", None, vec!["magiclink".to_string()]).await?;
-  Ok(Json(VerifyGrantResponse::Token(response)))
+  Ok(Json(VerifyGrantResponse::Token(Box::new(response))))
 }
 
 async fn consume_confirmation_token(

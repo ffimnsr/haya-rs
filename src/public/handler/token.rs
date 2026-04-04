@@ -40,10 +40,10 @@ pub async fn token(
     "password" => handle_password_grant(state, body).await.map(Json),
     "refresh_token" => handle_refresh_grant(state, body)
       .await
-      .map(|response| Json(TokenGrantResponse::Token(response))),
+      .map(|response| Json(TokenGrantResponse::Token(Box::new(response)))),
     "mfa_totp" => handle_mfa_totp_grant(state, headers, body)
       .await
-      .map(|response| Json(TokenGrantResponse::Token(response))),
+      .map(|response| Json(TokenGrantResponse::Token(Box::new(response)))),
     _ => Err(AuthError::ValidationFailed(format!(
       "Unsupported grant_type: {}",
       query.grant_type
@@ -99,7 +99,7 @@ async fn handle_password_grant(state: AppState, body: serde_json::Value) -> Resu
 
   session::issue_session(&state, &user, "password")
     .await
-    .map(TokenGrantResponse::Token)
+    .map(|response| TokenGrantResponse::Token(Box::new(response)))
 }
 
 async fn handle_refresh_grant(state: AppState, body: serde_json::Value) -> Result<TokenResponse> {

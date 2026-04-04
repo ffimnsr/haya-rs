@@ -38,7 +38,7 @@ pub async fn admin_list_users(
   AdminUser(_claims): AdminUser,
 ) -> Result<Json<serde_json::Value>> {
   let page = query.page.unwrap_or(1).max(1);
-  let per_page = query.per_page.unwrap_or(50).min(100).max(1);
+  let per_page = query.per_page.unwrap_or(50).clamp(1, 100);
   let offset = (page - 1) * per_page;
 
   let users: Vec<User> = sqlx::query_as::<_, User>(
@@ -167,17 +167,17 @@ pub async fn admin_create_user(
     .await?;
 
   // Apply ban_duration if provided
-  if let Some(ref ban_duration) = req.ban_duration {
-    if ban_duration != "none" {
-      let duration_secs = parse_ban_duration(ban_duration)?;
-      let banned_until = now + chrono::Duration::seconds(duration_secs);
-      sqlx::query("UPDATE auth.users SET banned_until = $1, updated_at = $2 WHERE id = $3")
-        .bind(banned_until)
-        .bind(now)
-        .bind(user_id)
-        .execute(&state.db)
-        .await?;
-    }
+  if let Some(ref ban_duration) = req.ban_duration
+    && ban_duration != "none"
+  {
+    let duration_secs = parse_ban_duration(ban_duration)?;
+    let banned_until = now + chrono::Duration::seconds(duration_secs);
+    sqlx::query("UPDATE auth.users SET banned_until = $1, updated_at = $2 WHERE id = $3")
+      .bind(banned_until)
+      .bind(now)
+      .bind(user_id)
+      .execute(&state.db)
+      .await?;
   }
 
   Ok(Json(UserResponse::from_user(&state.db, user).await?))

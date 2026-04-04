@@ -109,21 +109,21 @@ pub async fn build_token_response(
   let app_meta = user.raw_app_meta_data.clone().unwrap_or(serde_json::json!({}));
   let user_meta = user.raw_user_meta_data.clone().unwrap_or(serde_json::json!({}));
   let role = user.role.as_deref().unwrap_or("authenticated");
-  let access_token = jwt::encode_token(
-    user.id,
-    user.email.clone(),
-    user.phone.clone(),
+  let access_token = jwt::encode_token(jwt::EncodeTokenParams {
+    user_id: user.id,
+    email: user.email.clone(),
+    phone: user.phone.clone(),
     role,
     session_id,
-    user.is_anonymous,
+    is_anonymous: user.is_anonymous,
     aal,
     amr,
-    user_meta,
-    app_meta,
-    &state.jwt_secret,
-    state.jwt_exp,
-    &state.issuer,
-  )?;
+    user_metadata: user_meta,
+    app_metadata: app_meta,
+    jwt_secret: &state.jwt_secret,
+    jwt_exp: state.jwt_exp,
+    issuer: &state.issuer,
+  })?;
 
   let expires_at = now.timestamp() + state.jwt_exp;
   let user_response = UserResponse::from_user(&state.db, user.clone()).await?;

@@ -293,16 +293,16 @@ pub struct PendingMfaResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum TokenGrantResponse {
-  Token(TokenResponse),
+  Token(Box<TokenResponse>),
   PendingMfa(PendingMfaResponse),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum VerifyGrantResponse {
-  Token(TokenResponse),
+  Token(Box<TokenResponse>),
   PendingMfa(PendingMfaResponse),
-  User(UserResponse),
+  User(Box<UserResponse>),
 }
 
 /// Session model - kept for future session management endpoints.

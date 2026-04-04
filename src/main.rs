@@ -38,6 +38,16 @@ use uuid::Uuid;
 
 const APP_NAME: &str = env!("CARGO_PKG_NAME");
 
+#[derive(Clone)]
+struct RuntimeBootstrap {
+  config: RuntimeConfig,
+  http_client: reqwest::Client,
+  jwt_secret: String,
+  mfa_encryption_key: [u8; 32],
+  instance_id: Uuid,
+  mailer: Option<Arc<Mailer>>,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
   dotenvy::dotenv().ok();
@@ -51,9 +61,19 @@ async fn main() -> anyhow::Result<()> {
     .with(tracing_subscriber::fmt::layer())
     .init();
 
-  let (state, runtime_config) = build_runtime().await?;
-  let version = env!("CARGO_PKG_VERSION");
-  println!("Booting up Haya Auth v{}", version);
+  let runs_server = cli.runs_server();
+  let needs_app_state = cli.needs_app_state();
+  let bootstrap = build_runtime_bootstrap()?;
+  let runtime_config = bootstrap.config.clone();
+  if runs_server {
+    let version = env!("CARGO_PKG_VERSION");
+    println!("Booting up Haya Auth v{}", version);
+  }
+  if !needs_app_state {
+    return crate::cli::run_without_state(cli, runtime_config).await;
+  }
+
+  let state = build_app_state(&bootstrap).await?;
   crate::cli::run(cli, state, runtime_config).await
 }
 
@@ -70,12 +90,10 @@ fn origin_from_url(value: &str) -> anyhow::Result<String> {
   Ok(origin)
 }
 
-async fn build_runtime() -> anyhow::Result<(AppState, RuntimeConfig)> {
+fn build_runtime_bootstrap() -> anyhow::Result<RuntimeBootstrap> {
   let database_url = env::var("DATABASE_URL")
     .or_else(|_| env::var("DEFAULT_DATABASE_URL"))
     .unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string());
-
-  let db = db::init_pool(&database_url).await?;
   let http_client = reqwest::Client::builder()
     .redirect(reqwest::redirect::Policy::none())
     .build()?;
@@ -155,7 +173,6 @@ async fn build_runtime() -> anyhow::Result<(AppState, RuntimeConfig)> {
     .ok()
     .and_then(|v| v.parse().ok())
     .unwrap_or_else(Uuid::new_v4);
-  let oidc_providers = oidc::load_providers_from_db(&db).await?;
 
   let mailer_autoconfirm = env::var("MAILER_AUTOCONFIRM")
     .map(|v| v.to_lowercase() == "true" || v == "1")
@@ -201,23 +218,7 @@ async fn build_runtime() -> anyhow::Result<(AppState, RuntimeConfig)> {
 
   let port: u16 = env::var("PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(9999);
   let pid_file = env::var("HAYA_PID_FILE").unwrap_or_else(|_| "/tmp/haya.pid".to_string());
-  let state = AppState {
-    db,
-    http_client,
-    jwt_secret: jwt_secret.clone(),
-    mfa_encryption_key,
-    jwt_exp,
-    refresh_token_exp,
-    site_url: site_url.clone(),
-    allowed_redirect_origins: allowed_redirect_origins.clone(),
-    site_name: site_name.clone(),
-    issuer: issuer.clone(),
-    instance_id,
-    oidc_providers: Arc::new(RwLock::new(oidc_providers)),
-    mailer_autoconfirm,
-    mailer,
-  };
-  let runtime_config = RuntimeConfig {
+  let config = RuntimeConfig {
     port,
     database_url,
     site_url,
@@ -235,5 +236,34 @@ async fn build_runtime() -> anyhow::Result<(AppState, RuntimeConfig)> {
     mfa_key_source,
   };
 
-  Ok((state, runtime_config))
+  Ok(RuntimeBootstrap {
+    config,
+    http_client,
+    jwt_secret,
+    mfa_encryption_key,
+    instance_id,
+    mailer,
+  })
+}
+
+async fn build_app_state(bootstrap: &RuntimeBootstrap) -> anyhow::Result<AppState> {
+  let db = db::init_pool(&bootstrap.config.database_url).await?;
+  let oidc_providers = oidc::load_providers_from_db(&db).await?;
+
+  Ok(AppState {
+    db,
+    http_client: bootstrap.http_client.clone(),
+    jwt_secret: bootstrap.jwt_secret.clone(),
+    mfa_encryption_key: bootstrap.mfa_encryption_key,
+    jwt_exp: bootstrap.config.jwt_exp,
+    refresh_token_exp: bootstrap.config.refresh_token_exp,
+    site_url: bootstrap.config.site_url.clone(),
+    allowed_redirect_origins: bootstrap.config.allowed_redirect_origins.clone(),
+    site_name: bootstrap.config.site_name.clone(),
+    issuer: bootstrap.config.issuer.clone(),
+    instance_id: bootstrap.instance_id,
+    oidc_providers: Arc::new(RwLock::new(oidc_providers)),
+    mailer_autoconfirm: bootstrap.config.mailer_autoconfirm,
+    mailer: bootstrap.mailer.clone(),
+  })
 }

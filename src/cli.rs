@@ -6,6 +6,7 @@ use anyhow::{
 };
 use chrono::Utc;
 use clap::{
+  ArgAction,
   Args,
   Parser,
   Subcommand,
@@ -59,6 +60,19 @@ const ADMIN_ROLES: &[&str] = &["service_role", "supabase_admin"];
 pub struct Cli {
   #[command(subcommand)]
   pub command: Option<Command>,
+}
+
+impl Cli {
+  pub fn runs_server(&self) -> bool {
+    matches!(self.command, None | Some(Command::Serve(_)))
+  }
+
+  pub fn needs_app_state(&self) -> bool {
+    !matches!(
+      self.command,
+      Some(Command::Settings) | Some(Command::Reload) | Some(Command::Config { .. })
+    )
+  }
 }
 
 #[derive(Debug, Subcommand)]
@@ -406,7 +420,7 @@ pub struct AddSsoArgs {
   pub redirect_uri: String,
   #[arg(long, value_delimiter = ',', default_values_t = default_scopes())]
   pub scopes: Vec<String>,
-  #[arg(long, default_value_t = true)]
+  #[arg(long, action = ArgAction::Set, default_value_t = true)]
   pub pkce: bool,
   #[arg(long = "allowed-domain", value_delimiter = ',')]
   pub allowed_domains: Vec<String>,
@@ -533,6 +547,18 @@ struct OidcProviderView {
   updated_at: Option<chrono::DateTime<Utc>>,
 }
 
+#[derive(Debug, Serialize)]
+struct OidcProviderDetailView {
+  name: String,
+  issuer: String,
+  client_id: String,
+  client_secret_configured: bool,
+  redirect_uri: String,
+  scopes: Vec<String>,
+  pkce: bool,
+  allowed_email_domains: Vec<String>,
+}
+
 #[derive(Debug, Serialize, FromRow)]
 struct SessionListRow {
   id: Uuid,
@@ -604,6 +630,15 @@ struct SsoTestResult {
 }
 
 #[derive(Debug, Serialize)]
+struct ResetPasswordResult {
+  password_reset: bool,
+  mode: &'static str,
+  user_id: Uuid,
+  email_sent: bool,
+  recovery_link_generated: bool,
+}
+
+#[derive(Debug, Serialize)]
 struct SessionShowResult {
   session: SessionShowRow,
   amr: Vec<String>,
@@ -650,6 +685,15 @@ pub async fn run(cli: Cli, state: AppState, config: RuntimeConfig) -> anyhow::Re
     Some(Command::Sso { command }) => run_sso_command(command, &state).await,
     Some(Command::Admin { command }) => run_admin_command(command, &state).await,
     Some(Command::User { command }) => run_user_command(command, &state).await,
+  }
+}
+
+pub async fn run_without_state(cli: Cli, config: RuntimeConfig) -> anyhow::Result<()> {
+  match cli.command {
+    Some(Command::Settings) => show_settings(&config),
+    Some(Command::Reload) => reload_server(&config),
+    Some(Command::Config { command }) => run_config_command(command, &config).await,
+    _ => bail!("this command requires the full application runtime"),
   }
 }
 
@@ -724,11 +768,11 @@ fn reload_server(config: &RuntimeConfig) -> anyhow::Result<()> {
     if !status.success() {
       bail!("kill -HUP {pid} failed with status {status}");
     }
-    return print_json(&serde_json::json!({
+    print_json(&serde_json::json!({
       "reloaded": true,
       "pid": pid,
       "pid_file": config.pid_file,
-    }));
+    }))
   }
 
   #[cfg(not(unix))]
@@ -1247,13 +1291,13 @@ async fn reset_user_password(state: &AppState, args: ResetPasswordArgs) -> anyho
       .await?;
   }
 
-  print_json(&serde_json::json!({
-    "password_reset": true,
-    "mode": "recovery-link",
-    "user_id": user_id,
-    "email_sent": state.mailer.is_some(),
-    "recovery_url": recovery_url,
-  }))
+  print_json(&ResetPasswordResult {
+    password_reset: true,
+    mode: "recovery-link",
+    user_id,
+    email_sent: state.mailer.is_some(),
+    recovery_link_generated: true,
+  })
 }
 
 async fn list_mfa_factors(db: &PgPool, identifier: &str) -> anyhow::Result<()> {
@@ -1413,8 +1457,10 @@ async fn update_user_record(
     bail!("no updates requested");
   }
 
-  separated.push("updated_at = ").push_bind(now);
-  drop(separated);
+  {
+    let mut separated = separated;
+    separated.push("updated_at = ").push_bind(now);
+  }
   builder.push(" WHERE id = ");
   builder.push_bind(user_id);
   builder.build().execute(&state.db).await?;
@@ -1859,7 +1905,7 @@ async fn list_sso_providers(db: &PgPool) -> anyhow::Result<()> {
 
 async fn show_sso_provider(db: &PgPool, name: &str) -> anyhow::Result<()> {
   let provider = load_sso_provider(db, name).await?;
-  print_json(&provider)
+  print_json(&OidcProviderDetailView::from(provider))
 }
 
 async fn load_sso_provider(db: &PgPool, name: &str) -> anyhow::Result<oidc::OidcProviderConfig> {
@@ -2016,7 +2062,7 @@ fn maybe_reload_running_server() -> anyhow::Result<()> {
       bail!("kill -HUP {pid} failed with status {status}");
     }
     tracing::info!(pid, "Reloaded active Haya server after SSO configuration change");
-    return Ok(());
+    Ok(())
   }
 
   #[cfg(not(unix))]
@@ -2081,4 +2127,113 @@ fn print_json<T: Serialize>(value: &T) -> anyhow::Result<()> {
 
 fn default_scopes() -> Vec<String> {
   vec!["openid".to_string(), "email".to_string(), "profile".to_string()]
+}
+
+impl From<oidc::OidcProviderConfig> for OidcProviderDetailView {
+  fn from(provider: oidc::OidcProviderConfig) -> Self {
+    Self {
+      name: provider.name,
+      issuer: provider.issuer,
+      client_id: provider.client_id,
+      client_secret_configured: !provider.client_secret.trim().is_empty(),
+      redirect_uri: provider.redirect_uri,
+      scopes: provider.scopes,
+      pkce: provider.pkce,
+      allowed_email_domains: provider.allowed_email_domains,
+    }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn base_add_sso_args() -> Vec<&'static str> {
+    vec![
+      "haya",
+      "sso",
+      "add",
+      "--name",
+      "example",
+      "--issuer",
+      "https://issuer.example.com",
+      "--client-id",
+      "client-id",
+      "--client-secret",
+      "client-secret",
+      "--redirect-uri",
+      "https://app.example.com/callback",
+    ]
+  }
+
+  #[test]
+  fn cli_detects_server_commands() {
+    assert!(Cli::parse_from(["haya"]).runs_server());
+    assert!(Cli::parse_from(["haya", "serve"]).runs_server());
+    assert!(!Cli::parse_from(["haya", "settings"]).runs_server());
+  }
+
+  #[test]
+  fn cli_only_builds_app_state_for_runtime_commands() {
+    assert!(!Cli::parse_from(["haya", "settings"]).needs_app_state());
+    assert!(!Cli::parse_from(["haya", "reload"]).needs_app_state());
+    assert!(!Cli::parse_from(["haya", "config", "validate"]).needs_app_state());
+    assert!(Cli::parse_from(["haya", "status"]).needs_app_state());
+    assert!(Cli::parse_from(["haya"]).needs_app_state());
+  }
+
+  #[test]
+  fn add_sso_pkce_defaults_to_true() {
+    let cli = Cli::parse_from(base_add_sso_args());
+    let Some(Command::Sso {
+      command: SsoCommand::Add(args),
+    }) = cli.command
+    else {
+      panic!("expected sso add command");
+    };
+
+    assert!(args.pkce);
+  }
+
+  #[test]
+  fn add_sso_pkce_accepts_false() {
+    let mut argv = base_add_sso_args();
+    argv.push("--pkce");
+    argv.push("false");
+
+    let cli = Cli::parse_from(argv);
+    let Some(Command::Sso {
+      command: SsoCommand::Add(args),
+    }) = cli.command
+    else {
+      panic!("expected sso add command");
+    };
+
+    assert!(!args.pkce);
+  }
+
+  #[test]
+  fn redact_database_url_removes_credentials() {
+    let value = redact_database_url("postgres://user:password@example.com:5432/haya");
+
+    assert_eq!(value, "postgres://***:***@example.com:5432/haya");
+  }
+
+  #[test]
+  fn sso_show_view_redacts_client_secret() {
+    let view = OidcProviderDetailView::from(oidc::OidcProviderConfig {
+      name: "example".to_string(),
+      issuer: "https://issuer.example.com".to_string(),
+      client_id: "client-id".to_string(),
+      client_secret: "super-secret".to_string(),
+      redirect_uri: "https://app.example.com/callback".to_string(),
+      scopes: vec!["openid".to_string()],
+      pkce: true,
+      allowed_email_domains: vec!["example.com".to_string()],
+    });
+
+    let json = serde_json::to_value(view).expect("serialize sso show view");
+    assert_eq!(json["client_secret_configured"], true);
+    assert!(json.get("client_secret").is_none());
+  }
 }

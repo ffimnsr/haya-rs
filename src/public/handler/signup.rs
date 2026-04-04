@@ -22,7 +22,7 @@ use crate::state::AppState;
 #[derive(Debug, serde::Serialize)]
 #[serde(untagged)]
 pub enum SignupResponse {
-  User(UserResponse),
+  User(Box<UserResponse>),
   Empty(serde_json::Value),
 }
 
@@ -42,10 +42,10 @@ pub async fn signup(
     return Err(AuthError::ValidationFailed("Email is required.".to_string()));
   }
 
-  if let Some(ref email) = req.email {
-    if !is_valid_email(email) {
-      return Err(AuthError::ValidationFailed("Invalid email format".to_string()));
-    }
+  if let Some(ref email) = req.email
+    && !is_valid_email(email)
+  {
+    return Err(AuthError::ValidationFailed("Invalid email format".to_string()));
   }
   if let Some(ref password) = req.password {
     if password.len() < 6 {
@@ -142,9 +142,9 @@ pub async fn signup(
     }
   }
 
-  Ok(Json(SignupResponse::User(
+  Ok(Json(SignupResponse::User(Box::new(
     UserResponse::from_user(&state.db, user).await?,
-  )))
+  ))))
 }
 
 pub fn is_valid_email(email: &str) -> bool {

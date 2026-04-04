@@ -44,42 +44,45 @@ pub struct Claims {
   pub app_metadata: serde_json::Value,
 }
 
-pub fn encode_token(
-  user_id: Uuid,
-  email: Option<String>,
-  phone: Option<String>,
-  role: &str,
-  session_id: Uuid,
-  is_anonymous: bool,
-  aal: &str,
-  amr: Vec<AmrEntry>,
-  user_metadata: serde_json::Value,
-  app_metadata: serde_json::Value,
-  jwt_secret: &str,
-  jwt_exp: i64,
-  issuer: &str,
-) -> Result<String, AuthError> {
+#[derive(Debug)]
+pub struct EncodeTokenParams<'a> {
+  pub user_id: Uuid,
+  pub email: Option<String>,
+  pub phone: Option<String>,
+  pub role: &'a str,
+  pub session_id: Uuid,
+  pub is_anonymous: bool,
+  pub aal: &'a str,
+  pub amr: Vec<AmrEntry>,
+  pub user_metadata: serde_json::Value,
+  pub app_metadata: serde_json::Value,
+  pub jwt_secret: &'a str,
+  pub jwt_exp: i64,
+  pub issuer: &'a str,
+}
+
+pub fn encode_token(params: EncodeTokenParams<'_>) -> Result<String, AuthError> {
   let now = Utc::now().timestamp();
   let claims = Claims {
-    sub: user_id.to_string(),
+    sub: params.user_id.to_string(),
     aud: JWT_AUDIENCE.to_string(),
-    exp: now + jwt_exp,
+    exp: now + params.jwt_exp,
     iat: now,
-    iss: issuer.to_string(),
-    email,
-    phone,
-    role: role.to_string(),
-    aal: aal.to_string(),
-    amr,
-    session_id: session_id.to_string(),
-    is_anonymous,
-    user_metadata,
-    app_metadata,
+    iss: params.issuer.to_string(),
+    email: params.email,
+    phone: params.phone,
+    role: params.role.to_string(),
+    aal: params.aal.to_string(),
+    amr: params.amr,
+    session_id: params.session_id.to_string(),
+    is_anonymous: params.is_anonymous,
+    user_metadata: params.user_metadata,
+    app_metadata: params.app_metadata,
   };
   encode(
     &Header::new(Algorithm::HS256),
     &claims,
-    &EncodingKey::from_secret(jwt_secret.as_bytes()),
+    &EncodingKey::from_secret(params.jwt_secret.as_bytes()),
   )
   .map_err(|e| AuthError::InternalError(e.to_string()))
 }
@@ -110,24 +113,24 @@ mod tests {
     let session_id = Uuid::new_v4();
     let secret = "test-secret-key";
 
-    let token = encode_token(
+    let token = encode_token(EncodeTokenParams {
       user_id,
-      Some("test@example.com".to_string()),
-      None,
-      "authenticated",
+      email: Some("test@example.com".to_string()),
+      phone: None,
+      role: "authenticated",
       session_id,
-      false,
-      "aal1",
-      vec![AmrEntry {
+      is_anonymous: false,
+      aal: "aal1",
+      amr: vec![AmrEntry {
         method: "password".to_string(),
         timestamp: Utc::now().timestamp(),
       }],
-      serde_json::json!({}),
-      serde_json::json!({"provider": "email"}),
-      secret,
-      3600,
-      "https://example.com",
-    )
+      user_metadata: serde_json::json!({}),
+      app_metadata: serde_json::json!({"provider": "email"}),
+      jwt_secret: secret,
+      jwt_exp: 3600,
+      issuer: "https://example.com",
+    })
     .unwrap();
 
     let decoded = decode_token(&token, secret, "https://example.com").unwrap();
@@ -142,24 +145,24 @@ mod tests {
     let session_id = Uuid::new_v4();
     let secret = "test-secret-key";
 
-    let token = encode_token(
+    let token = encode_token(EncodeTokenParams {
       user_id,
-      None,
-      None,
-      "authenticated",
+      email: None,
+      phone: None,
+      role: "authenticated",
       session_id,
-      false,
-      "aal1",
-      vec![AmrEntry {
+      is_anonymous: false,
+      aal: "aal1",
+      amr: vec![AmrEntry {
         method: "password".to_string(),
         timestamp: Utc::now().timestamp(),
       }],
-      serde_json::json!({}),
-      serde_json::json!({}),
-      secret,
-      -10, // already expired
-      "https://example.com",
-    )
+      user_metadata: serde_json::json!({}),
+      app_metadata: serde_json::json!({}),
+      jwt_secret: secret,
+      jwt_exp: -10, // already expired
+      issuer: "https://example.com",
+    })
     .unwrap();
 
     let result = decode_token(&token, secret, "https://example.com");
