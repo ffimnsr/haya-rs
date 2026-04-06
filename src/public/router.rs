@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::http::{
   HeaderValue,
   Method,
@@ -127,6 +128,7 @@ pub fn create_router(state: AppState) -> Router {
     )
     .fallback(handler::not_found)
     .with_state(state)
+    .layer(DefaultBodyLimit::max(1024 * 1024))
     .layer(build_cors_layer())
     .layer(TraceLayer::new_for_http())
     .layer(TimeoutLayer::new(Duration::from_secs(30)))

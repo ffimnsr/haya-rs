@@ -20,16 +20,13 @@ pub struct LogoutQuery {
 pub async fn logout(
   State(state): State<AppState>,
   Query(query): Query<LogoutQuery>,
-  AuthUser(claims): AuthUser,
+  AuthUser { claims, user }: AuthUser,
 ) -> Result<impl IntoResponse> {
   let session_id: Uuid = claims
     .session_id
     .parse()
     .map_err(|_| crate::error::AuthError::InternalError("Invalid session_id".to_string()))?;
-  let user_id: Uuid = claims
-    .sub
-    .parse()
-    .map_err(|_| crate::error::AuthError::InternalError("Invalid user_id".to_string()))?;
+  let user_id = user.id;
   let now = Utc::now();
 
   match query.scope.as_deref() {

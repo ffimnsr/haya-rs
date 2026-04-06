@@ -15,8 +15,6 @@ pub struct AppState {
   pub jwt_secret: String,
   pub mfa_encryption_key: [u8; 32],
   pub jwt_exp: i64,
-  /// Lifetime of refresh tokens in seconds (used for token expiry checks)
-  #[allow(dead_code)]
   pub refresh_token_exp: i64,
   /// Base URL of the site (used for generating email links in recovery/confirmation)
   pub site_url: String,

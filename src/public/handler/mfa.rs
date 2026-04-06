@@ -18,7 +18,6 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::auth::{
-  jwt,
   mfa,
   session,
 };
@@ -79,20 +78,18 @@ struct TotpFactorVerifyStateRow {
 
 pub async fn list_factors(
   State(state): State<AppState>,
-  AuthUser(claims): AuthUser,
+  AuthUser { user, .. }: AuthUser,
 ) -> Result<Json<Vec<MfaFactorResponse>>> {
-  let user_id = user_id_from_claims(&claims)?;
-  let factors = factors_by_user_id(&state.db, user_id).await?;
+  let factors = factors_by_user_id(&state.db, user.id).await?;
   Ok(Json(factors.into_iter().map(Into::into).collect()))
 }
 
 pub async fn create_totp_factor(
   State(state): State<AppState>,
-  AuthUser(claims): AuthUser,
+  AuthUser { claims, user }: AuthUser,
   Json(req): Json<CreateTotpFactorRequest>,
 ) -> Result<Json<MfaEnrollResponse>> {
-  let user_id = user_id_from_claims(&claims)?;
-  let user = fetch_user(&state.db, user_id).await?;
+  let user_id = user.id;
   session::require_reauthentication(
     &state,
     &claims,
@@ -137,11 +134,11 @@ pub async fn create_totp_factor(
 
 pub async fn verify_totp_factor(
   State(state): State<AppState>,
-  AuthUser(claims): AuthUser,
+  AuthUser { user, .. }: AuthUser,
   Path(factor_id): Path<Uuid>,
   Json(req): Json<VerifyTotpCodeRequest>,
 ) -> Result<Json<MfaFactorResponse>> {
-  let user_id = user_id_from_claims(&claims)?;
+  let user_id = user.id;
   let now = Utc::now();
   let mut tx = state.db.begin().await?;
   let factor = factor_verify_state_by_id(tx.as_mut(), factor_id, user_id).await?;
@@ -182,10 +179,10 @@ pub async fn verify_totp_factor(
 
 pub async fn delete_factor(
   State(state): State<AppState>,
-  AuthUser(claims): AuthUser,
+  AuthUser { claims, user }: AuthUser,
   Path(factor_id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
-  let user_id = user_id_from_claims(&claims)?;
+  let user_id = user.id;
   let factor = factor_by_id(&state.db, factor_id, user_id).await?;
 
   if factor.status == "verified" && claims.aal != "aal2" {
@@ -349,13 +346,6 @@ pub async fn verified_factors_by_user_id(db: &PgPool, user_id: Uuid) -> Result<V
   .await?;
 
   Ok(factors)
-}
-
-fn user_id_from_claims(claims: &jwt::Claims) -> Result<Uuid> {
-  claims
-    .sub
-    .parse()
-    .map_err(|_| AuthError::InternalError("Invalid user_id in token".to_string()))
 }
 
 async fn factors_by_user_id(db: &PgPool, user_id: Uuid) -> Result<Vec<MfaFactorRow>> {

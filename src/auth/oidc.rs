@@ -1,5 +1,10 @@
 use sqlx::PgPool;
 use std::collections::HashMap;
+use std::net::{
+  IpAddr,
+  Ipv4Addr,
+  Ipv6Addr,
+};
 use uuid::Uuid;
 
 use base64::Engine as _;
@@ -26,6 +31,7 @@ use sha2::{
 };
 use url::Url;
 
+use crate::auth::jwt::JWT_LEEWAY_SECONDS;
 use crate::error::AuthError;
 
 const DEFAULT_SCOPES: &[&str] = &["openid", "email", "profile"];
@@ -35,6 +41,7 @@ pub struct OidcProviderConfig {
   pub name: String,
   pub issuer: String,
   pub client_id: String,
+  #[serde(skip)]
   pub client_secret: String,
   pub redirect_uri: String,
   #[serde(default = "default_scopes")]
@@ -154,7 +161,7 @@ impl OidcProviderConfig {
         self.name
       );
     }
-    Url::parse(&self.issuer)?;
+    validate_discovery_issuer(&self.issuer)?;
     Url::parse(&self.redirect_uri)?;
     Ok(())
   }
@@ -231,7 +238,8 @@ pub async fn discover_provider(
   client: &reqwest::Client,
   config: &OidcProviderConfig,
 ) -> Result<OidcDiscoveryDocument, AuthError> {
-  let issuer = config.issuer.trim_end_matches('/');
+  let issuer = validate_discovery_issuer(&config.issuer)?;
+  ensure_public_discovery_host(issuer.host_str()).await?;
   let discovery_url = format!("{issuer}/.well-known/openid-configuration");
   let response = client
     .get(discovery_url)
@@ -251,13 +259,86 @@ pub async fn discover_provider(
     .await
     .map_err(|e| AuthError::InternalError(format!("invalid OIDC discovery document: {e}")))?;
 
-  if discovery.issuer.trim_end_matches('/') != issuer {
+  if discovery.issuer.trim_end_matches('/') != issuer.as_str().trim_end_matches('/') {
     return Err(AuthError::ValidationFailed(
       "OIDC issuer mismatch in discovery document".to_string(),
     ));
   }
 
   Ok(discovery)
+}
+
+fn validate_discovery_issuer(issuer: &str) -> Result<Url, AuthError> {
+  let url =
+    Url::parse(issuer).map_err(|e| AuthError::ValidationFailed(format!("invalid OIDC issuer: {e}")))?;
+  if url.scheme() != "https" {
+    return Err(AuthError::ValidationFailed(
+      "OIDC issuer must use https".to_string(),
+    ));
+  }
+  if url.host_str().is_none() {
+    return Err(AuthError::ValidationFailed(
+      "OIDC issuer must include a host".to_string(),
+    ));
+  }
+  Ok(url)
+}
+
+async fn ensure_public_discovery_host(host: Option<&str>) -> Result<(), AuthError> {
+  let host =
+    host.ok_or_else(|| AuthError::ValidationFailed("OIDC issuer must include a host".to_string()))?;
+  if let Ok(ip) = host.parse::<IpAddr>() {
+    if is_disallowed_oidc_ip(&ip) {
+      return Err(AuthError::ValidationFailed(
+        "OIDC issuer host must not resolve to a private or local IP".to_string(),
+      ));
+    }
+    return Ok(());
+  }
+
+  let lookup = tokio::net::lookup_host((host, 443))
+    .await
+    .map_err(|e| AuthError::InternalError(format!("failed to resolve OIDC issuer host: {e}")))?;
+  for addr in lookup {
+    if is_disallowed_oidc_ip(&addr.ip()) {
+      return Err(AuthError::ValidationFailed(
+        "OIDC issuer host must not resolve to a private or local IP".to_string(),
+      ));
+    }
+  }
+  Ok(())
+}
+
+fn is_disallowed_oidc_ip(ip: &IpAddr) -> bool {
+  match ip {
+    IpAddr::V4(ip) => {
+      ip.is_private()
+        || ip.is_loopback()
+        || ip.is_link_local()
+        || ip.is_multicast()
+        || ip.is_broadcast()
+        || is_documentation_ipv4(ip)
+        || ip.is_unspecified()
+    },
+    IpAddr::V6(ip) => {
+      ip.is_loopback()
+        || ip.is_multicast()
+        || ip.is_unspecified()
+        || ip.is_unique_local()
+        || ip.is_unicast_link_local()
+        || is_documentation_ipv6(ip)
+    },
+  }
+}
+
+fn is_documentation_ipv4(ip: &Ipv4Addr) -> bool {
+  let octets = ip.octets();
+  matches!(octets, [192, 0, 2, _] | [198, 51, 100, _] | [203, 0, 113, _])
+}
+
+fn is_documentation_ipv6(ip: &Ipv6Addr) -> bool {
+  let segments = ip.segments();
+  segments[0] == 0x2001 && segments[1] == 0x0db8
 }
 
 pub async fn exchange_code(
@@ -360,6 +441,7 @@ pub async fn validate_id_token(
   let mut validation = Validation::new(header.alg);
   validation.set_audience(std::slice::from_ref(&config.client_id));
   validation.set_issuer(std::slice::from_ref(&discovery.issuer));
+  validation.leeway = JWT_LEEWAY_SECONDS;
 
   let raw_claims = decode::<Value>(id_token, &key, &validation)
     .map_err(|_| AuthError::InvalidToken)?
@@ -522,6 +604,19 @@ mod tests {
     assert_eq!(query.get("state"), Some(&"state".into()));
     assert_eq!(query.get("nonce"), Some(&"nonce".into()));
     assert_eq!(query.get("code_challenge_method"), Some(&"S256".into()));
+  }
+
+  #[test]
+  fn rejects_non_https_issuer() {
+    let error = validate_discovery_issuer("http://issuer.example.com").unwrap_err();
+    assert!(matches!(error, AuthError::ValidationFailed(_)));
+  }
+
+  #[test]
+  fn rejects_private_ip_issuer_hosts() {
+    assert!(is_disallowed_oidc_ip(&"127.0.0.1".parse().unwrap()));
+    assert!(is_disallowed_oidc_ip(&"169.254.169.254".parse().unwrap()));
+    assert!(!is_disallowed_oidc_ip(&"8.8.8.8".parse().unwrap()));
   }
 
   #[test]

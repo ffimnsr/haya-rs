@@ -23,21 +23,8 @@ use crate::state::AppState;
 
 pub async fn get_user(
   State(state): State<AppState>,
-  AuthUser(claims): AuthUser,
+  AuthUser { user, .. }: AuthUser,
 ) -> Result<Json<UserResponse>> {
-  let user_id: Uuid = claims
-    .sub
-    .parse()
-    .map_err(|_| AuthError::InternalError("Invalid user_id in token".to_string()))?;
-
-  let user: User = sqlx::query_as::<_, User>(
-        "SELECT id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_sso_user, is_anonymous, banned_until, deleted_at, created_at, updated_at FROM auth.users WHERE id = $1"
-    )
-    .bind(user_id)
-    .fetch_optional(&state.db)
-    .await?
-    .ok_or(AuthError::UserNotFound)?;
-
   Ok(Json(UserResponse::from_user(&state.db, user).await?))
 }
 
@@ -53,20 +40,13 @@ pub struct UpdateUserRequest {
 
 pub async fn update_user(
   State(state): State<AppState>,
-  AuthUser(claims): AuthUser,
+  AuthUser { claims, user }: AuthUser,
   Json(req): Json<UpdateUserRequest>,
 ) -> Result<Json<UserResponse>> {
   let user_id: Uuid = claims
     .sub
     .parse()
     .map_err(|_| AuthError::InternalError("Invalid user_id in token".to_string()))?;
-  let user: User = sqlx::query_as::<_, User>(
-    "SELECT id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_sso_user, is_anonymous, banned_until, deleted_at, created_at, updated_at FROM auth.users WHERE id = $1",
-  )
-  .bind(user_id)
-  .fetch_optional(&state.db)
-  .await?
-  .ok_or(AuthError::UserNotFound)?;
 
   let now = Utc::now();
   let changing_sensitive_fields = req.password.is_some() || req.email.is_some() || req.phone.is_some();

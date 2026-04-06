@@ -5,7 +5,6 @@ mod defaults;
 mod error;
 mod mailer;
 mod middleware;
-mod mime;
 mod model;
 mod public;
 mod state;
@@ -22,7 +21,12 @@ use crate::auth::{
   oidc,
 };
 use crate::cli::Cli;
-use crate::defaults::DEFAULT_DATABASE_URL;
+use crate::defaults::{
+  ACCESS_TOKEN_LIFETIME,
+  DEFAULT_DATABASE_URL,
+  DEFAULT_PORT,
+  REFRESH_TOKEN_LIFETIME,
+};
 use crate::mailer::{
   Mailer,
   MailerConfig,
@@ -64,7 +68,7 @@ async fn main() -> anyhow::Result<()> {
   let runs_server = cli.runs_server();
   let needs_app_state = cli.needs_app_state();
   let needs_database = cli.needs_database();
-  let bootstrap = build_runtime_bootstrap(needs_app_state)?;
+  let bootstrap = build_runtime_bootstrap(needs_app_state || needs_database)?;
   let runtime_config = bootstrap.config.clone();
   if runs_server {
     let version = env!("CARGO_PKG_VERSION");
@@ -118,10 +122,13 @@ fn env_flag_enabled(name: &str) -> bool {
     .unwrap_or(false)
 }
 
-fn build_runtime_bootstrap(require_full_runtime: bool) -> anyhow::Result<RuntimeBootstrap> {
+fn build_runtime_bootstrap(require_database: bool) -> anyhow::Result<RuntimeBootstrap> {
   let database_url = env::var("DATABASE_URL")
     .or_else(|_| env::var("DEFAULT_DATABASE_URL"))
     .unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string());
+  if require_database && database_url == DEFAULT_DATABASE_URL {
+    anyhow::bail!("DATABASE_URL must be set explicitly");
+  }
   let http_client = reqwest::Client::builder()
     .redirect(reqwest::redirect::Policy::none())
     .build()?;
@@ -129,10 +136,10 @@ fn build_runtime_bootstrap(require_full_runtime: bool) -> anyhow::Result<Runtime
   let dev_mode = env_flag_enabled("HAYA_DEV_MODE");
   let jwt_secret = match env::var("JWT_SECRET") {
     Ok(secret) if secret.len() >= 32 => secret,
-    Ok(secret) if secret.is_empty() && require_full_runtime => {
+    Ok(secret) if secret.is_empty() && require_database => {
       anyhow::bail!("JWT_SECRET must not be empty");
     },
-    Ok(secret) if require_full_runtime => {
+    Ok(secret) if require_database => {
       let _ = secret;
       anyhow::bail!("JWT_SECRET must be at least 32 characters long");
     },
@@ -146,7 +153,7 @@ fn build_runtime_bootstrap(require_full_runtime: bool) -> anyhow::Result<Runtime
       );
       dev_secret.to_string()
     },
-    Err(_) if require_full_runtime => {
+    Err(_) if require_database => {
       anyhow::bail!(
         "JWT_SECRET environment variable is required. \
                    Set a strong secret of at least 32 characters. \
@@ -159,13 +166,13 @@ fn build_runtime_bootstrap(require_full_runtime: bool) -> anyhow::Result<Runtime
   let jwt_exp: i64 = env::var("JWT_EXPIRY")
     .ok()
     .and_then(|v| v.parse().ok())
-    .unwrap_or(3600);
+    .unwrap_or(ACCESS_TOKEN_LIFETIME);
 
   let (mfa_encryption_key, mfa_key_source) = match env::var("MFA_ENCRYPTION_KEY") {
     Ok(value) if !value.trim().is_empty() => (mfa::derive_encryption_key(&value), "env"),
-    Ok(_) if require_full_runtime => anyhow::bail!("MFA_ENCRYPTION_KEY must not be empty when set"),
+    Ok(_) if require_database => anyhow::bail!("MFA_ENCRYPTION_KEY must not be empty when set"),
     Ok(_) => ([0; 32], "unset"),
-    Err(_) if require_full_runtime => anyhow::bail!(
+    Err(_) if require_database => anyhow::bail!(
       "MFA_ENCRYPTION_KEY environment variable is required and must be set independently from JWT_SECRET"
     ),
     Err(_) => ([0; 32], "unset"),
@@ -174,7 +181,7 @@ fn build_runtime_bootstrap(require_full_runtime: bool) -> anyhow::Result<Runtime
   let refresh_token_exp: i64 = env::var("REFRESH_TOKEN_EXPIRY")
     .ok()
     .and_then(|v| v.parse().ok())
-    .unwrap_or(1_209_600);
+    .unwrap_or(REFRESH_TOKEN_LIFETIME);
 
   let site_url = env::var("SITE_URL").unwrap_or_else(|_| "http://localhost:9999".to_string());
   let cors_allowed_origins = parse_origin_list_env("CORS_ALLOWED_ORIGINS");
@@ -237,7 +244,10 @@ fn build_runtime_bootstrap(require_full_runtime: bool) -> anyhow::Result<Runtime
     (None, false)
   };
 
-  let port: u16 = env::var("PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(9999);
+  let port: u16 = env::var("PORT")
+    .ok()
+    .and_then(|v| v.parse().ok())
+    .unwrap_or(DEFAULT_PORT);
   let pid_file = env::var("HAYA_PID_FILE").unwrap_or_else(|_| "/tmp/haya.pid".to_string());
   let config = RuntimeConfig {
     port,

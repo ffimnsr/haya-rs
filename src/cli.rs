@@ -2196,16 +2196,29 @@ async fn count_query_with_cutoff(
 }
 
 fn redact_database_url(value: &str) -> String {
-  let Ok(mut url) = url::Url::parse(value) else {
+  if let Ok(mut url) = url::Url::parse(value) {
+    if url.password().is_some() {
+      let _ = url.set_password(Some("***"));
+    }
+    if !url.username().is_empty() {
+      let _ = url.set_username("***");
+    }
+    return url.to_string();
+  }
+
+  let Some(scheme_sep) = value.find("://") else {
     return "<invalid database url>".to_string();
   };
-  if url.password().is_some() {
-    let _ = url.set_password(Some("***"));
+  let authority_start = scheme_sep + 3;
+  let Some(at_pos) = value[authority_start..].find('@') else {
+    return "<invalid database url>".to_string();
+  };
+  let at_pos = authority_start + at_pos;
+  let credentials = &value[authority_start..at_pos];
+  if !credentials.contains(':') {
+    return "<invalid database url>".to_string();
   }
-  if !url.username().is_empty() {
-    let _ = url.set_username("***");
-  }
-  url.to_string()
+  format!("{}***:***{}", &value[..authority_start], &value[at_pos..])
 }
 
 fn print_json<T: Serialize>(value: &T) -> anyhow::Result<()> {
@@ -2313,6 +2326,13 @@ mod tests {
   #[test]
   fn redact_database_url_removes_credentials() {
     let value = redact_database_url("postgres://user:password@example.com:5432/haya");
+
+    assert_eq!(value, "postgres://***:***@example.com:5432/haya");
+  }
+
+  #[test]
+  fn redact_database_url_masks_unparseable_credentials() {
+    let value = redact_database_url("postgres://user:p@ss@example.com:5432/haya");
 
     assert_eq!(value, "postgres://***:***@example.com:5432/haya");
   }

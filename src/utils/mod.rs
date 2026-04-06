@@ -7,14 +7,6 @@ use tokio::signal;
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 
-// fn generate_authorization_code() -> String {
-//     let random_bytes = rand::thread_rng().gen::<[u8; 256]>();
-//     let mut hasher = Sha1::new();
-//     hasher.update(random_bytes);
-//     let hash = format!("{:x}", hasher.finalize());
-//     hash
-// }
-
 pub async fn shutdown_signal() {
   let ctrl_c = async {
     signal::ctrl_c().await.expect("failed to install Ctrl+C handler");

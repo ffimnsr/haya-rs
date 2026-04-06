@@ -9,7 +9,10 @@ use crate::error::AuthError;
 use crate::model::User;
 use crate::state::AppState;
 
-pub struct AuthUser(pub jwt::Claims);
+pub struct AuthUser {
+  pub claims: jwt::Claims,
+  pub user: User,
+}
 pub struct AdminUser(pub jwt::Claims);
 
 impl FromRequestParts<AppState> for AuthUser {
@@ -23,10 +26,10 @@ impl FromRequestParts<AppState> for AuthUser {
     session::ensure_active_session(state, &claims)
       .await
       .map_err(|_| AuthError::NotAuthorized)?;
-    session::load_current_user(state, &claims)
+    let user = session::load_current_user(state, &claims)
       .await
       .map_err(|_| AuthError::NotAuthorized)?;
-    Ok(AuthUser(claims))
+    Ok(AuthUser { claims, user })
   }
 }
 

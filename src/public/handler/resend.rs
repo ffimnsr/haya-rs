@@ -52,15 +52,14 @@ pub async fn resend(
   .fetch_optional(&state.db)
   .await?;
 
-  if user_id.is_none() {
-    return Ok(Json(serde_json::json!({})));
-  }
-
-  let ResendUserRow {
+  let Some(ResendUserRow {
     id: user_id,
     confirmation_sent_at,
     recovery_sent_at,
-  } = user_id.unwrap();
+  }) = user_id
+  else {
+    return Ok(Json(serde_json::json!({})));
+  };
   let mut bytes = [0u8; 32];
   rand::rng().fill_bytes(&mut bytes);
   let token = URL_SAFE_NO_PAD.encode(bytes);

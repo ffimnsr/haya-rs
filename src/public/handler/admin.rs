@@ -149,8 +149,14 @@ pub async fn admin_create_user(
     None
   };
 
+  let banned_until = match req.ban_duration.as_deref() {
+    Some("none") | None => None,
+    Some(duration) => Some(now + chrono::Duration::seconds(parse_ban_duration(duration)?)),
+  };
+
+  let mut tx = state.db.begin().await?;
   let user: User = sqlx::query_as::<_, User>(
-        "INSERT INTO auth.users (id, instance_id, aud, role, email, encrypted_password, phone, raw_app_meta_data, raw_user_meta_data, email_confirmed_at, phone_confirmed_at, is_anonymous, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_sso_user, is_anonymous, banned_until, deleted_at, created_at, updated_at"
+        "INSERT INTO auth.users (id, instance_id, aud, role, email, encrypted_password, phone, raw_app_meta_data, raw_user_meta_data, email_confirmed_at, phone_confirmed_at, is_anonymous, banned_until, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_sso_user, is_anonymous, banned_until, deleted_at, created_at, updated_at"
     )
     .bind(user_id)
     .bind(state.instance_id)
@@ -164,24 +170,12 @@ pub async fn admin_create_user(
     .bind(email_confirmed_at)
     .bind(phone_confirmed_at)
     .bind(false)
+    .bind(banned_until)
     .bind(now)
     .bind(now)
-    .fetch_one(&state.db)
+    .fetch_one(&mut *tx)
     .await?;
-
-  // Apply ban_duration if provided
-  if let Some(ref ban_duration) = req.ban_duration
-    && ban_duration != "none"
-  {
-    let duration_secs = parse_ban_duration(ban_duration)?;
-    let banned_until = now + chrono::Duration::seconds(duration_secs);
-    sqlx::query("UPDATE auth.users SET banned_until = $1, updated_at = $2 WHERE id = $3")
-      .bind(banned_until)
-      .bind(now)
-      .bind(user_id)
-      .execute(&state.db)
-      .await?;
-  }
+  tx.commit().await?;
 
   Ok(Json(UserResponse::from_user(&state.db, user).await?))
 }

@@ -38,12 +38,10 @@ pub async fn recover(
     .fetch_optional(&state.db)
     .await?;
 
-  if user_exists.is_none() {
+  let Some((user_id, recovery_sent_at)) = user_exists else {
     // Return 200 regardless to prevent email enumeration
     return Ok(Json(serde_json::json!({})));
-  }
-
-  let (user_id, recovery_sent_at) = user_exists.unwrap();
+  };
   let now = Utc::now();
   if email_token_cooldown_active(recovery_sent_at, now) {
     tracing::info!("Recovery token regeneration suppressed by cooldown");

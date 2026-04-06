@@ -103,34 +103,6 @@ impl IntoResponse for AuthError {
   }
 }
 
-/// Generic error wrapper for anyhow errors - kept for extensibility.
-#[allow(dead_code)]
-pub struct AppError(anyhow::Error);
-
-impl IntoResponse for AppError {
-  fn into_response(self) -> Response {
-    tracing::error!("Unhandled application error: {}", self.0);
-    (
-      StatusCode::INTERNAL_SERVER_ERROR,
-      Json(json!({
-        "code": StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-        "error_code": "unexpected_failure",
-        "msg": "An unexpected error occurred",
-      })),
-    )
-      .into_response()
-  }
-}
-
-impl<E> From<E> for AppError
-where
-  E: Into<anyhow::Error>,
-{
-  fn from(value: E) -> Self {
-    Self(value.into())
-  }
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;

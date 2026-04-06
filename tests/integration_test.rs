@@ -1,4 +1,7 @@
-use std::net::TcpListener;
+use std::io::{
+  BufRead,
+  BufReader,
+};
 use std::path::PathBuf;
 use std::process::{
   Child,
@@ -40,6 +43,7 @@ use uuid::Uuid;
 
 const JWT_SECRET: &str = "integration-test-jwt-secret-with-32-bytes";
 const MFA_KEY_MATERIAL: &str = "integration-test-mfa-key-material-32bytes";
+const TEST_ISSUER: &str = "https://haya.test.invalid";
 const TOTP_PERIOD_SECS: i64 = 30;
 const TOTP_DIGITS: u32 = 6;
 
@@ -88,13 +92,13 @@ fn unique_suffix() -> String {
   Uuid::new_v4().simple().to_string()
 }
 
-fn reserve_port() -> u16 {
-  let listener = TcpListener::bind("127.0.0.1:0").expect("bind test port");
-  listener.local_addr().expect("read test port").port()
+fn pid_file_path() -> PathBuf {
+  std::env::temp_dir().join(format!("haya-integration-{}.pid", unique_suffix()))
 }
 
-fn pid_file_path(port: u16) -> PathBuf {
-  std::env::temp_dir().join(format!("haya-integration-{port}.pid"))
+fn parse_listen_port(line: &str) -> Option<u16> {
+  let (_, addr) = line.split_once("Haya Auth is now listening at ")?;
+  addr.rsplit(':').next()?.trim().parse().ok()
 }
 
 async fn migrate_database(database_url: &str) {
@@ -129,20 +133,35 @@ async fn test_context() -> Option<TestContext> {
   let database_url = database_url()?;
   migrate_database(&database_url).await;
 
-  let port = reserve_port();
-  let base_url = format!("http://127.0.0.1:{port}");
-  let pid_file = pid_file_path(port);
-  let child = Command::new(env!("CARGO_BIN_EXE_haya"))
+  let port = 0u16;
+  let pid_file = pid_file_path();
+  let site_url = "http://127.0.0.1".to_string();
+  let mut child = Command::new(env!("CARGO_BIN_EXE_haya"))
     .env("DATABASE_URL", &database_url)
     .env("JWT_SECRET", JWT_SECRET)
     .env("MFA_ENCRYPTION_KEY", MFA_KEY_MATERIAL)
+    .env("JWT_ISSUER", TEST_ISSUER)
     .env("PORT", port.to_string())
-    .env("SITE_URL", &base_url)
+    .env("SITE_URL", &site_url)
     .env("HAYA_PID_FILE", &pid_file)
-    .stdout(Stdio::null())
+    .stdout(Stdio::piped())
     .stderr(Stdio::null())
     .spawn()
     .expect("spawn haya server");
+
+  let stdout = child.stdout.take().expect("capture haya stdout");
+  let mut stdout = BufReader::new(stdout);
+  let mut line = String::new();
+  let mut bound_port = None;
+  while stdout.read_line(&mut line).expect("read haya stdout") > 0 {
+    if let Some(parsed_port) = parse_listen_port(&line) {
+      bound_port = Some(parsed_port);
+      break;
+    }
+    line.clear();
+  }
+  let port = bound_port.expect("parse bound haya port");
+  let base_url = format!("http://127.0.0.1:{port}");
 
   let client = reqwest::Client::new();
   wait_for_health(&client, &base_url).await;
@@ -151,7 +170,7 @@ async fn test_context() -> Option<TestContext> {
     pool: PgPool::connect(&database_url).await.expect("connect test db"),
     client,
     base_url: base_url.clone(),
-    issuer: base_url,
+    issuer: TEST_ISSUER.to_string(),
     jwt_secret: JWT_SECRET.to_string(),
     mfa_key_material: MFA_KEY_MATERIAL.to_string(),
     child,

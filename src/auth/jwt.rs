@@ -19,6 +19,7 @@ use crate::error::AuthError;
 
 /// The audience value embedded in JWTs and validated on decode.
 pub const JWT_AUDIENCE: &str = "authenticated";
+pub const JWT_LEEWAY_SECONDS: u64 = 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AmrEntry {
@@ -91,7 +92,7 @@ pub fn decode_token(token: &str, jwt_secret: &str, issuer: &str) -> Result<Token
   let mut validation = Validation::new(Algorithm::HS256);
   validation.set_audience(&[JWT_AUDIENCE]);
   validation.set_issuer(&[issuer]);
-  validation.leeway = 0;
+  validation.leeway = JWT_LEEWAY_SECONDS;
   decode::<Claims>(
     token,
     &DecodingKey::from_secret(jwt_secret.as_bytes()),
@@ -160,7 +161,7 @@ mod tests {
       user_metadata: serde_json::json!({}),
       app_metadata: serde_json::json!({}),
       jwt_secret: secret,
-      jwt_exp: -10, // already expired
+      jwt_exp: -((JWT_LEEWAY_SECONDS as i64) + 10),
       issuer: "https://example.com",
     })
     .unwrap();

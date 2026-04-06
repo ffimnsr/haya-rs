@@ -12,7 +12,7 @@ pub async fn serve(port: u16, state: AppState) -> anyhow::Result<()> {
   utils::write_pid_file()?;
   let reload_state = state.clone();
   let watchdog_client = state.http_client.clone();
-  tokio::spawn(async move {
+  let reload_task = tokio::spawn(async move {
     utils::reload_signal(move || {
       let reload_state = reload_state.clone();
       async move {
@@ -42,6 +42,12 @@ pub async fn serve(port: u16, state: AppState) -> anyhow::Result<()> {
   utils::notify_stopping("Haya Auth is stopping");
   if let Some(watchdog) = watchdog {
     watchdog.abort();
+  }
+  reload_task.abort();
+  if let Err(error) = reload_task.await
+    && !error.is_cancelled()
+  {
+    tracing::error!(error = %error, "Reload task terminated unexpectedly");
   }
   serve_result?;
   let _ = utils::remove_pid_file();

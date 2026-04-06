@@ -14,9 +14,11 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::auth::{
+  mfa as crypto_mfa,
   oidc,
   session,
 };
+use crate::defaults::AUTHORIZATION_CODE_LIFETIME;
 use crate::error::{
   AuthError,
   Result,
@@ -83,7 +85,7 @@ pub async fn authorize(
   let flow = oidc::generate_flow_tokens(provider.pkce);
   let flow_id = Uuid::new_v4();
   let now = Utc::now();
-  let expires_at = now + Duration::minutes(10);
+  let expires_at = now + Duration::seconds(AUTHORIZATION_CODE_LIFETIME);
 
   sqlx::query(
     "INSERT INTO auth.flow_state (id, user_id, auth_code, code_challenge_method, code_challenge, provider_type, provider_access_token, provider_refresh_token, authentication_method, created_at, updated_at, nonce, redirect_to, pkce_verifier, expires_at) VALUES ($1, NULL, $2, $3::auth.code_challenge_method, $4, $5, NULL, NULL, $6, $7, $8, $9, $10, $11, $12)",
@@ -298,7 +300,8 @@ pub async fn exchange_callback_code(state: AppState, body: serde_json::Value) ->
   let payload = row
     .provider_access_token
     .ok_or_else(|| AuthError::InternalError("OIDC callback result is missing".to_string()))?;
-  serde_json::from_str(&payload)
+  let decrypted = crypto_mfa::decrypt_secret(&payload, &state.mfa_encryption_key)?;
+  serde_json::from_slice(&decrypted)
     .map_err(|e| AuthError::InternalError(format!("invalid OIDC callback result payload: {e}")))
 }
 
@@ -306,15 +309,16 @@ async fn persist_oidc_result(state: &AppState, response: TokenGrantResponse) -> 
   let exchange_code = session::generate_refresh_token();
   let now = Utc::now();
   let expires_at = now + Duration::minutes(OIDC_RESULT_TTL_MINUTES);
-  let payload = serde_json::to_string(&response)
+  let payload = serde_json::to_vec(&response)
     .map_err(|e| AuthError::InternalError(format!("failed to serialize OIDC callback result: {e}")))?;
+  let encrypted_payload = crypto_mfa::encrypt_secret(&payload, &state.mfa_encryption_key)?;
 
   sqlx::query(
     "INSERT INTO auth.flow_state (id, user_id, auth_code, code_challenge_method, code_challenge, provider_type, provider_access_token, provider_refresh_token, authentication_method, created_at, updated_at, expires_at) VALUES ($1, NULL, $2, 'plain'::auth.code_challenge_method, '', 'oidc_result', $3, NULL, 'oidc', $4, $5, $6)",
   )
   .bind(Uuid::new_v4())
   .bind(&exchange_code)
-  .bind(payload)
+  .bind(encrypted_payload)
   .bind(now)
   .bind(now)
   .bind(expires_at)
