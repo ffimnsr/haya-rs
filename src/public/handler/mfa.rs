@@ -39,6 +39,7 @@ use crate::model::{
   User,
 };
 use crate::state::AppState;
+use crate::utils::sha256_hex;
 
 const MFA_PENDING_TTL_MINUTES: i64 = 5;
 const MFA_MAX_VERIFY_ATTEMPTS: i32 = 10;
@@ -249,6 +250,7 @@ pub async fn create_pending_login(
   let now = Utc::now();
   let flow_id = Uuid::new_v4();
   let mfa_token = session::generate_refresh_token();
+  let mfa_token_hash = sha256_hex(&mfa_token);
   let expires_at = now + Duration::minutes(MFA_PENDING_TTL_MINUTES);
 
   sqlx::query("DELETE FROM auth.flow_state WHERE user_id = $1 AND provider_type = 'totp'")
@@ -260,7 +262,7 @@ pub async fn create_pending_login(
   )
   .bind(flow_id)
   .bind(user_id)
-  .bind(&mfa_token)
+  .bind(&mfa_token_hash)
   .bind("totp")
   .bind(authentication_method)
   .bind(now)
@@ -428,7 +430,7 @@ async fn pending_flow_by_token(db: &PgPool, token: &str) -> Result<PendingFlowRo
   sqlx::query_as::<_, PendingFlowRow>(
     "SELECT id, user_id, authentication_method, expires_at FROM auth.flow_state WHERE auth_code = $1 AND provider_type = 'totp'",
   )
-  .bind(token)
+  .bind(sha256_hex(token))
   .fetch_optional(db)
   .await?
   .ok_or(AuthError::InvalidToken)
@@ -445,7 +447,7 @@ async fn pending_flow_attempt(
   )
   .bind(factor_id)
   .bind(now)
-  .bind(token)
+  .bind(sha256_hex(token))
   .bind(MFA_MAX_VERIFY_ATTEMPTS)
   .fetch_optional(db)
   .await?

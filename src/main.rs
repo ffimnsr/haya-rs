@@ -327,6 +327,7 @@ async fn build_app_state(bootstrap: &RuntimeBootstrap) -> anyhow::Result<AppStat
     issuer: bootstrap.config.issuer.clone(),
     instance_id: bootstrap.instance_id,
     oidc_providers: Arc::new(RwLock::new(oidc_providers)),
+    oidc_jwks_cache: Arc::new(RwLock::new(std::collections::HashMap::new())),
     mailer_autoconfirm: bootstrap.config.mailer_autoconfirm,
     mailer: bootstrap.mailer.clone(),
   })

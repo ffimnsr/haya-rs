@@ -4,6 +4,7 @@ use std::net::{
   IpAddr,
   Ipv4Addr,
   Ipv6Addr,
+  SocketAddr,
 };
 use uuid::Uuid;
 
@@ -17,6 +18,7 @@ use jsonwebtoken::{
   decode_header,
 };
 use rand::RngCore;
+use serde::de::DeserializeOwned;
 use serde::{
   Deserialize,
   Serialize,
@@ -35,6 +37,13 @@ use crate::auth::jwt::JWT_LEEWAY_SECONDS;
 use crate::error::AuthError;
 
 const DEFAULT_SCOPES: &[&str] = &["openid", "email", "profile"];
+const JWKS_CACHE_TTL_MINUTES: i64 = 10;
+
+#[derive(Debug, Clone)]
+pub struct CachedJwks {
+  pub jwks: JwkSet,
+  pub fetched_at: chrono::DateTime<chrono::Utc>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OidcProviderConfig {
@@ -239,15 +248,12 @@ pub fn build_authorization_url(
 }
 
 pub async fn discover_provider(
-  client: &reqwest::Client,
+  _client: &reqwest::Client,
   config: &OidcProviderConfig,
 ) -> Result<OidcDiscoveryDocument, AuthError> {
   let issuer = validate_discovery_issuer(&config.issuer)?;
-  ensure_public_discovery_host(issuer.host_str()).await?;
   let discovery_url = format!("{issuer}/.well-known/openid-configuration");
-  let response = client
-    .get(discovery_url)
-    .send()
+  let response = get_with_resolved_client(&discovery_url)
     .await
     .map_err(|e| AuthError::InternalError(format!("OIDC discovery request failed: {e}")))?;
 
@@ -268,6 +274,12 @@ pub async fn discover_provider(
       "OIDC issuer mismatch in discovery document".to_string(),
     ));
   }
+  resolve_public_endpoint(&discovery.authorization_endpoint).await?;
+  resolve_public_endpoint(&discovery.token_endpoint).await?;
+  if let Some(endpoint) = discovery.userinfo_endpoint.as_deref() {
+    resolve_public_endpoint(endpoint).await?;
+  }
+  resolve_public_endpoint(&discovery.jwks_uri).await?;
 
   Ok(discovery)
 }
@@ -286,31 +298,6 @@ fn validate_discovery_issuer(issuer: &str) -> Result<Url, AuthError> {
     ));
   }
   Ok(url)
-}
-
-async fn ensure_public_discovery_host(host: Option<&str>) -> Result<(), AuthError> {
-  let host =
-    host.ok_or_else(|| AuthError::ValidationFailed("OIDC issuer must include a host".to_string()))?;
-  if let Ok(ip) = host.parse::<IpAddr>() {
-    if is_disallowed_oidc_ip(&ip) {
-      return Err(AuthError::ValidationFailed(
-        "OIDC issuer host must not resolve to a private or local IP".to_string(),
-      ));
-    }
-    return Ok(());
-  }
-
-  let lookup = tokio::net::lookup_host((host, 443))
-    .await
-    .map_err(|e| AuthError::InternalError(format!("failed to resolve OIDC issuer host: {e}")))?;
-  for addr in lookup {
-    if is_disallowed_oidc_ip(&addr.ip()) {
-      return Err(AuthError::ValidationFailed(
-        "OIDC issuer host must not resolve to a private or local IP".to_string(),
-      ));
-    }
-  }
-  Ok(())
 }
 
 fn is_disallowed_oidc_ip(ip: &IpAddr) -> bool {
@@ -346,7 +333,7 @@ fn is_documentation_ipv6(ip: &Ipv6Addr) -> bool {
 }
 
 pub async fn exchange_code(
-  client: &reqwest::Client,
+  _client: &reqwest::Client,
   discovery: &OidcDiscoveryDocument,
   config: &OidcProviderConfig,
   code: &str,
@@ -364,6 +351,7 @@ pub async fn exchange_code(
     form.push(("code_verifier", verifier.to_string()));
   }
 
+  let client = client_for_endpoint(&discovery.token_endpoint).await?;
   let response = client
     .post(&discovery.token_endpoint)
     .form(&form)
@@ -387,7 +375,7 @@ pub async fn exchange_code(
 }
 
 pub async fn fetch_userinfo(
-  client: &reqwest::Client,
+  _client: &reqwest::Client,
   discovery: &OidcDiscoveryDocument,
   access_token: &str,
 ) -> Result<Option<Value>, AuthError> {
@@ -395,6 +383,7 @@ pub async fn fetch_userinfo(
     return Ok(None);
   };
 
+  let client = client_for_endpoint(endpoint).await?;
   let response = client
     .get(endpoint)
     .bearer_auth(access_token)
@@ -414,21 +403,14 @@ pub async fn fetch_userinfo(
 }
 
 pub async fn validate_id_token(
-  client: &reqwest::Client,
+  state: &crate::state::AppState,
   discovery: &OidcDiscoveryDocument,
   config: &OidcProviderConfig,
   id_token: &str,
   expected_nonce: &str,
 ) -> Result<ValidatedIdToken, AuthError> {
   let header = decode_header(id_token).map_err(|_| AuthError::InvalidToken)?;
-  let jwks: JwkSet = client
-    .get(&discovery.jwks_uri)
-    .send()
-    .await
-    .map_err(|e| AuthError::InternalError(format!("OIDC JWKS request failed: {e}")))?
-    .json()
-    .await
-    .map_err(|e| AuthError::InternalError(format!("invalid OIDC JWKS payload: {e}")))?;
+  let jwks = get_cached_jwks(state, &discovery.jwks_uri).await?;
 
   let jwk = if let Some(ref kid) = header.kid {
     jwks
@@ -550,6 +532,104 @@ fn random_token(bytes: usize) -> String {
   let mut data = vec![0u8; bytes];
   rand::rng().fill_bytes(&mut data);
   URL_SAFE_NO_PAD.encode(data)
+}
+
+async fn get_cached_jwks(state: &crate::state::AppState, jwks_uri: &str) -> Result<JwkSet, AuthError> {
+  {
+    let cache = state.oidc_jwks_cache.read().await;
+    if let Some(entry) = cache.get(jwks_uri)
+      && entry.fetched_at + chrono::Duration::minutes(JWKS_CACHE_TTL_MINUTES) > chrono::Utc::now()
+    {
+      return Ok(entry.jwks.clone());
+    }
+  }
+
+  let jwks: JwkSet = get_json_with_resolved_client(jwks_uri)
+    .await
+    .map_err(|e| AuthError::InternalError(format!("OIDC JWKS request failed: {e}")))?;
+  let mut cache = state.oidc_jwks_cache.write().await;
+  cache.insert(
+    jwks_uri.to_string(),
+    CachedJwks {
+      jwks: jwks.clone(),
+      fetched_at: chrono::Utc::now(),
+    },
+  );
+  Ok(jwks)
+}
+
+async fn resolve_public_endpoint(endpoint: &str) -> Result<(Url, Vec<SocketAddr>), AuthError> {
+  let url =
+    Url::parse(endpoint).map_err(|e| AuthError::ValidationFailed(format!("invalid OIDC endpoint: {e}")))?;
+  if url.scheme() != "https" {
+    return Err(AuthError::ValidationFailed(
+      "OIDC endpoints must use https".to_string(),
+    ));
+  }
+  let host = url
+    .host_str()
+    .ok_or_else(|| AuthError::ValidationFailed("OIDC endpoint must include a host".to_string()))?;
+  let port = url
+    .port_or_known_default()
+    .ok_or_else(|| AuthError::ValidationFailed("OIDC endpoint must include a known port".to_string()))?;
+  let addrs = resolve_public_host(host, port).await?;
+  Ok((url, addrs))
+}
+
+async fn resolve_public_host(host: &str, port: u16) -> Result<Vec<SocketAddr>, AuthError> {
+  if let Ok(ip) = host.parse::<IpAddr>() {
+    if is_disallowed_oidc_ip(&ip) {
+      return Err(AuthError::ValidationFailed(
+        "OIDC endpoint host must not resolve to a private or local IP".to_string(),
+      ));
+    }
+    return Ok(vec![SocketAddr::new(ip, port)]);
+  }
+
+  let addrs = tokio::net::lookup_host((host, port))
+    .await
+    .map_err(|e| AuthError::InternalError(format!("failed to resolve OIDC host: {e}")))?
+    .collect::<Vec<_>>();
+  if addrs.is_empty() {
+    return Err(AuthError::ValidationFailed(
+      "OIDC endpoint host did not resolve to any address".to_string(),
+    ));
+  }
+  if addrs.iter().any(|addr| is_disallowed_oidc_ip(&addr.ip())) {
+    return Err(AuthError::ValidationFailed(
+      "OIDC endpoint host must not resolve to a private or local IP".to_string(),
+    ));
+  }
+  Ok(addrs)
+}
+
+async fn client_for_endpoint(endpoint: &str) -> Result<reqwest::Client, AuthError> {
+  let (url, addrs) = resolve_public_endpoint(endpoint).await?;
+  let host = url
+    .host_str()
+    .ok_or_else(|| AuthError::ValidationFailed("OIDC endpoint must include a host".to_string()))?;
+  reqwest::Client::builder()
+    .redirect(reqwest::redirect::Policy::none())
+    .resolve_to_addrs(host, &addrs)
+    .build()
+    .map_err(|e| AuthError::InternalError(format!("failed to build OIDC client: {e}")))
+}
+
+async fn get_with_resolved_client(endpoint: &str) -> Result<reqwest::Response, AuthError> {
+  let client = client_for_endpoint(endpoint).await?;
+  client
+    .get(endpoint)
+    .send()
+    .await
+    .map_err(|e| AuthError::InternalError(format!("OIDC request failed: {e}")))
+}
+
+async fn get_json_with_resolved_client<T: DeserializeOwned>(endpoint: &str) -> Result<T, AuthError> {
+  get_with_resolved_client(endpoint)
+    .await?
+    .json()
+    .await
+    .map_err(|e| AuthError::InternalError(format!("invalid OIDC payload: {e}")))
 }
 
 #[cfg(test)]

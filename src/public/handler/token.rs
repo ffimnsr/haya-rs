@@ -29,11 +29,13 @@ use crate::model::{
   TokenResponse,
   User,
 };
+use crate::public::handler::admin::validate_password_policy;
 use crate::public::handler::{
   mfa,
   sso,
 };
 use crate::state::AppState;
+use crate::utils::sha256_hex;
 
 const PASSWORD_GRANT_RATE_LIMIT_ATTEMPTS: u32 = 10;
 const PASSWORD_GRANT_RATE_LIMIT_WINDOW_SECS: u64 = 300;
@@ -142,6 +144,11 @@ async fn handle_password_grant(
     return Err(AuthError::InvalidCredentials);
   }
 
+  if !state.mailer_autoconfirm && user.email.is_some() && user.email_confirmed_at.is_none() {
+    password::burn_password_work(pw)?;
+    return Err(AuthError::InvalidCredentials);
+  }
+
   let Some(hash) = user.encrypted_password.as_deref() else {
     password::burn_password_work(pw)?;
     rate_limit::record_failure(
@@ -159,6 +166,7 @@ async fn handle_password_grant(
     return Err(AuthError::InvalidCredentials);
   };
 
+  validate_password_policy(pw)?;
   if !password::verify_password(pw, hash)? {
     rate_limit::record_failure(
       &state.db,
@@ -175,24 +183,8 @@ async fn handle_password_grant(
     return Err(AuthError::InvalidCredentials);
   }
 
-  // Require email confirmation when mailer_autoconfirm is disabled
-  if !state.mailer_autoconfirm && user.email.is_some() && user.email_confirmed_at.is_none() {
-    password::burn_password_work(pw)?;
-    rate_limit::record_failure(
-      &state.db,
-      &rate_limit_key,
-      PASSWORD_GRANT_RATE_LIMIT_WINDOW_SECS as i64,
-    )
-    .await?;
-    rate_limit::record_failure(
-      &state.db,
-      &ip_rate_limit_key,
-      PASSWORD_GRANT_RATE_LIMIT_WINDOW_SECS as i64,
-    )
-    .await?;
-    return Err(AuthError::InvalidCredentials);
-  }
   rate_limit::clear(&state.db, &rate_limit_key).await?;
+  rate_limit::clear(&state.db, &ip_rate_limit_key).await?;
 
   let factors = mfa::verified_factors_by_user_id(&state.db, user.id).await?;
   if !factors.is_empty() {
@@ -212,6 +204,7 @@ async fn handle_refresh_grant(state: AppState, body: serde_json::Value) -> Resul
     .ok_or_else(|| AuthError::ValidationFailed("refresh_token is required".to_string()))?;
 
   let now = Utc::now();
+  let rt_hash = sha256_hex(rt_str);
   let refresh_expires_after = chrono::Duration::seconds(state.refresh_token_exp);
   let mut tx = state.db.begin().await?;
 
@@ -221,7 +214,7 @@ async fn handle_refresh_grant(state: AppState, body: serde_json::Value) -> Resul
      WHERE token = $1
      FOR UPDATE",
   )
-  .bind(rt_str)
+  .bind(&rt_hash)
   .fetch_optional(&mut *tx)
   .await?
   .ok_or(AuthError::InvalidToken)?;
@@ -277,15 +270,16 @@ async fn handle_refresh_grant(state: AppState, body: serde_json::Value) -> Resul
   // Reject banned users before issuing a new token
   // Perform token rotation atomically: revoke old, insert new, update session.
   let new_refresh_token = session::generate_refresh_token();
+  let new_refresh_token_hash = sha256_hex(&new_refresh_token);
 
   sqlx::query(
         "INSERT INTO auth.refresh_tokens (instance_id, user_id, token, session_id, revoked, parent, created_at, updated_at) VALUES ($1, $2, $3, $4, false, $5, $6, $7)"
     )
     .bind(state.instance_id)
     .bind(user.id.to_string())
-    .bind(&new_refresh_token)
+    .bind(&new_refresh_token_hash)
     .bind(session_id)
-    .bind(rt_str)
+    .bind(&rt_hash)
     .bind(now)
     .bind(now)
     .execute(&mut *tx)

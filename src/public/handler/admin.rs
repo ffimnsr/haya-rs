@@ -28,6 +28,7 @@ use crate::public::handler::signup::{
 use crate::state::AppState;
 
 const ALLOWED_USER_ROLES: &[&str] = &["authenticated", "service_role", "supabase_admin", "anon"];
+const RESERVED_APP_METADATA_KEYS: &[&str] = &["provider", "providers", "role"];
 
 #[derive(Debug, Deserialize)]
 pub struct PaginationQuery {
@@ -135,9 +136,11 @@ pub async fn admin_create_user(
   let role = req.role.as_deref().unwrap_or("authenticated");
   validate_role(role)?;
   let user_metadata = req.user_metadata.unwrap_or(serde_json::json!({}));
-  let app_metadata = req
-    .app_metadata
-    .unwrap_or(serde_json::json!({"provider": "email", "providers": ["email"]}));
+  let app_metadata = validate_admin_app_metadata(
+    req
+      .app_metadata
+      .unwrap_or(serde_json::json!({"provider": "email", "providers": ["email"]})),
+  )?;
   let email_confirmed_at = if req.email_confirm.unwrap_or(false) {
     Some(now)
   } else {
@@ -285,6 +288,7 @@ pub async fn admin_update_user(
   }
 
   if let Some(ref meta) = req.app_metadata {
+    validate_admin_app_metadata(meta.clone())?;
     sqlx::query("UPDATE auth.users SET raw_app_meta_data = $1, updated_at = $2 WHERE id = $3")
       .bind(meta)
       .bind(now)
@@ -395,6 +399,22 @@ pub(crate) fn validate_role(role: &str) -> Result<(), AuthError> {
   }
 
   Err(AuthError::ValidationFailed(format!("Unsupported role: {role}")))
+}
+
+fn validate_admin_app_metadata(metadata: serde_json::Value) -> Result<serde_json::Value> {
+  let serde_json::Value::Object(map) = &metadata else {
+    return Ok(metadata);
+  };
+
+  for key in RESERVED_APP_METADATA_KEYS {
+    if map.contains_key(*key) {
+      return Err(AuthError::ValidationFailed(format!(
+        "app_metadata must not override reserved key: {key}"
+      )));
+    }
+  }
+
+  Ok(metadata)
 }
 
 #[cfg(test)]

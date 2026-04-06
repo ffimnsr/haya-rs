@@ -28,6 +28,7 @@ use crate::model::{
   UserResponse,
 };
 use crate::state::AppState;
+use crate::utils::sha256_hex;
 
 const REAUTHENTICATION_TTL_MINUTES: i64 = 10;
 const REAUTHENTICATION_RATE_LIMIT_WINDOW_SECS: u64 = 900;
@@ -75,12 +76,13 @@ pub async fn issue_session_with_context(
   }
 
   let refresh_token = generate_refresh_token();
+  let refresh_token_hash = sha256_hex(&refresh_token);
   sqlx::query(
     "INSERT INTO auth.refresh_tokens (instance_id, user_id, token, session_id, revoked, created_at, updated_at) VALUES ($1, $2, $3, $4, false, $5, $6)",
   )
   .bind(state.instance_id)
   .bind(user.id.to_string())
-  .bind(&refresh_token)
+  .bind(&refresh_token_hash)
   .bind(session_id)
   .bind(now)
   .bind(now)
@@ -274,17 +276,23 @@ pub async fn require_reauthentication(
     .map(str::trim)
     .filter(|token| !token.is_empty())
   {
-    let limiter_key = reauthentication_rate_limit_key(user.id, client_ip);
-    if rate_limit::is_limited(&state.db, &limiter_key, REAUTHENTICATION_RATE_LIMIT_ATTEMPTS).await? {
+    let token_limiter_key = reauthentication_token_rate_limit_key(user.id, client_ip);
+    if rate_limit::is_limited(
+      &state.db,
+      &token_limiter_key,
+      REAUTHENTICATION_RATE_LIMIT_ATTEMPTS,
+    )
+    .await?
+    {
       return Err(AuthError::TooManyRequests);
     }
     if consume_reauthentication_token(state, user.id, token, Utc::now()).await? {
-      rate_limit::clear(&state.db, &limiter_key).await?;
+      rate_limit::clear(&state.db, &token_limiter_key).await?;
       return Ok(());
     }
     rate_limit::record_failure(
       &state.db,
-      &limiter_key,
+      &token_limiter_key,
       REAUTHENTICATION_RATE_LIMIT_WINDOW_SECS as i64,
     )
     .await?;
@@ -292,12 +300,29 @@ pub async fn require_reauthentication(
   }
 
   if let Some(hash) = user.encrypted_password.as_deref() {
+    let password_limiter_key = reauthentication_password_rate_limit_key(user.id, client_ip);
+    if rate_limit::is_limited(
+      &state.db,
+      &password_limiter_key,
+      REAUTHENTICATION_RATE_LIMIT_ATTEMPTS,
+    )
+    .await?
+    {
+      return Err(AuthError::TooManyRequests);
+    }
     let current_password = current_password.ok_or_else(|| {
       AuthError::ValidationFailed("current_password or reauthentication_token is required".to_string())
     })?;
     if !password::verify_password(current_password, hash)? {
+      rate_limit::record_failure(
+        &state.db,
+        &password_limiter_key,
+        REAUTHENTICATION_RATE_LIMIT_WINDOW_SECS as i64,
+      )
+      .await?;
       return Err(AuthError::InvalidCredentials);
     }
+    rate_limit::clear(&state.db, &password_limiter_key).await?;
     return Ok(());
   }
 
@@ -308,8 +333,12 @@ pub async fn require_reauthentication(
   Ok(())
 }
 
-fn reauthentication_rate_limit_key(user_id: Uuid, client_ip: IpAddr) -> String {
-  format!("reauth:{user_id}:{client_ip}")
+fn reauthentication_token_rate_limit_key(user_id: Uuid, client_ip: IpAddr) -> String {
+  format!("reauth-token:{user_id}:{client_ip}")
+}
+
+fn reauthentication_password_rate_limit_key(user_id: Uuid, client_ip: IpAddr) -> String {
+  format!("reauth-password:{user_id}:{client_ip}")
 }
 
 pub async fn send_reauthentication_token(state: &AppState, user: &User) -> Result<()> {
@@ -321,13 +350,14 @@ pub async fn send_reauthentication_token(state: &AppState, user: &User) -> Resul
   })?;
 
   let token = generate_refresh_token();
+  let token_hash = sha256_hex(&token);
   let now = Utc::now();
   let expires_minutes = REAUTHENTICATION_TTL_MINUTES.to_string();
 
   sqlx::query(
     "UPDATE auth.users SET reauthentication_token = $1, reauthentication_sent_at = $2, updated_at = $3 WHERE id = $4",
   )
-  .bind(&token)
+  .bind(&token_hash)
   .bind(now)
   .bind(now)
   .bind(user.id)
@@ -369,7 +399,7 @@ async fn consume_reauthentication_token(
   )
   .bind(now)
   .bind(user_id)
-  .bind(token)
+  .bind(sha256_hex(token))
   .bind(valid_after)
   .execute(&state.db)
   .await?;
@@ -406,6 +436,7 @@ mod tests {
       issuer: "http://localhost:9999".to_string(),
       instance_id: Uuid::nil(),
       oidc_providers: Arc::new(RwLock::new(HashMap::new())),
+      oidc_jwks_cache: Arc::new(RwLock::new(HashMap::new())),
       mailer_autoconfirm: false,
       mailer: None,
     }

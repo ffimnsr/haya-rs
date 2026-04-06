@@ -27,6 +27,7 @@ pub struct AppState {
   pub issuer: String,
   pub instance_id: Uuid,
   pub oidc_providers: Arc<RwLock<HashMap<String, OidcProviderConfig>>>,
+  pub oidc_jwks_cache: Arc<RwLock<HashMap<String, crate::auth::oidc::CachedJwks>>>,
   /// When true, users can sign in without confirming their email
   pub mailer_autoconfirm: bool,
   /// SMTP mailer; `None` when `SMTP_HOST` is not configured

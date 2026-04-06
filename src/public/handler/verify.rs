@@ -153,7 +153,7 @@ async fn consume_recovery_token(
     return Err(AuthError::TooManyRequests);
   }
   let user = sqlx::query_as::<_, User>(
-        "UPDATE auth.users SET recovery_token = NULL, updated_at = $1 WHERE recovery_token = $2 AND recovery_sent_at > NOW() - INTERVAL '1 hour' RETURNING id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, COALESCE(confirmed_at, email_confirmed_at, phone_confirmed_at) as confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_sso_user, is_anonymous, banned_until, deleted_at, created_at, updated_at"
+        "UPDATE auth.users SET email_confirmed_at = COALESCE(email_confirmed_at, $1), recovery_token = NULL, updated_at = $1 WHERE recovery_token = $2 AND recovery_sent_at > NOW() - INTERVAL '1 hour' RETURNING id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, COALESCE(confirmed_at, email_confirmed_at, phone_confirmed_at) as confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_sso_user, is_anonymous, banned_until, deleted_at, created_at, updated_at"
     )
     .bind(now)
     .bind(sha256_hex(token))

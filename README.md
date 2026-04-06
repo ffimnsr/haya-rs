@@ -28,8 +28,9 @@ Haya does not run migrations automatically on startup. Apply the base schema in 
 At minimum, set these variables:
 
 ```bash
-export DATABASE_URL="postgres://e_auth:mysecretpassword@localhost:5432/haya"
+export DATABASE_URL="postgres://e_auth:change-me@localhost:5432/haya"
 export JWT_SECRET="replace-this-with-a-secret-at-least-32-characters-long"
+export MFA_ENCRYPTION_KEY="replace-this-with-a-separate-secret"
 ```
 
 Useful optional variables:
@@ -37,10 +38,12 @@ Useful optional variables:
 ```bash
 export PORT=9999
 export SITE_URL="http://localhost:9999"
+export SITE_NAME="Haya"
 export JWT_EXPIRY=3600
-export MFA_ENCRYPTION_KEY="replace-this-with-a-separate-secret"
 export REFRESH_TOKEN_EXPIRY=1209600
+export SESSION_IDLE_TIMEOUT_SECS=86400
 export CORS_ALLOWED_ORIGINS="http://localhost:3000"
+export ALLOWED_REDIRECT_ORIGINS="http://localhost:3000"
 export MAILER_AUTOCONFIRM=false
 ```
 
@@ -48,8 +51,9 @@ Notes:
 
 - `JWT_SECRET` is required in normal operation and must be at least 32 characters.
 - `MFA_ENCRYPTION_KEY` is required and must be separate from `JWT_SECRET` so TOTP secrets use independent key material.
-- For local development only, you can set `HAYA_DEV_MODE=1` to allow an insecure built-in JWT secret.
+- For local development only, you can set `HAYA_DEV_MODE=1` to allow an ephemeral development JWT secret when `JWT_SECRET` is unset.
 - If `GOTRUE_JWT_ISSUER` or `JWT_ISSUER` is not set, Haya uses `SITE_URL` as the issuer.
+- A complete starting template is available in [.env.example](.env.example).
 
 ### 4. Run the server
 
@@ -191,19 +195,32 @@ Supported command groups:
 ### Optional
 
 - `DEFAULT_DATABASE_URL`: fallback if `DATABASE_URL` is unset.
+- `DATABASE_MAX_CONNECTIONS`: PostgreSQL pool size. Defaults to `20`.
+- `DATABASE_ACQUIRE_TIMEOUT_SECS`: PostgreSQL pool acquire timeout in seconds. Defaults to `5`.
 - `PORT`: HTTP port. Defaults to `9999`.
 - `SITE_URL`: base URL used by the service. Defaults to `http://localhost:9999`.
+- `SITE_NAME`: display name used in email templates and UI-facing messages. Defaults to `Haya`.
 - `GOTRUE_JWT_ISSUER`: preferred JWT issuer override.
 - `JWT_ISSUER`: fallback issuer override.
 - `JWT_EXPIRY`: access token lifetime in seconds. Defaults to `3600`.
 - `MFA_ENCRYPTION_KEY`: dedicated key material for encrypting stored TOTP secrets. This is required and must not reuse `JWT_SECRET`.
 - `REFRESH_TOKEN_EXPIRY`: refresh token lifetime in seconds. Defaults to `1209600`.
+- `SESSION_IDLE_TIMEOUT_SECS`: idle session timeout in seconds. Defaults to `86400`.
 - `INSTANCE_ID`: explicit UUID for the auth instance.
 - `MAILER_AUTOCONFIRM`: enables automatic confirmation when set to `true` or `1`.
-- `CORS_ALLOWED_ORIGINS`: comma-separated list of allowed origins. Also used as the allowlist for OIDC `redirect_to` origins alongside `SITE_URL`. If omitted, CORS is permissive.
+- `CORS_ALLOWED_ORIGINS`: comma-separated list of allowed browser origins for CORS. If omitted, CORS is permissive in dev mode and defaults to `SITE_URL` otherwise.
+- `ALLOWED_REDIRECT_ORIGINS`: comma-separated list of allowed OIDC `redirect_to` origins, in addition to `SITE_URL`.
 - `ALLOWED_REDIRECT_PATH_PREFIXES`: optional comma-separated list of allowed path prefixes for OIDC `redirect_to` URLs. When set, redirects must match both an allowed origin and one of these prefixes.
 - `OIDC_RESPONSE_MODE`: set to `form_post` to request OIDC providers post the callback to `/callback` instead of using the default query redirect.
-- `HAYA_DEV_MODE`: enables an insecure built-in JWT secret for local development only.
+- `SMTP_HOST`: SMTP server hostname. If unset, email sending is disabled.
+- `SMTP_PORT`: SMTP server port. Defaults to `587`.
+- `SMTP_USERNAME`: SMTP username for authenticated SMTP sessions.
+- `SMTP_PASSWORD`: SMTP password for authenticated SMTP sessions.
+- `SMTP_TLS`: when set to `false` or `0`, disables STARTTLS. Defaults to `true`.
+- `SMTP_FROM_EMAIL`: sender email address. Defaults to `noreply@example.com`.
+- `SMTP_FROM_NAME`: sender display name. Defaults to `SITE_NAME`.
+- `EMAIL_TEMPLATES_DIR`: directory containing override email templates. Defaults to `./templates/email`.
+- `HAYA_DEV_MODE`: when `JWT_SECRET` is unset, enables an ephemeral development JWT secret for local development only.
 - `HAYA_PID_FILE`: overrides the pid file path used by `haya reload` and `haya doctor`. Defaults to `/tmp/haya.pid`.
 
 ### systemd watchdog

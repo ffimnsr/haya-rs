@@ -190,7 +190,7 @@ async fn handle_callback(
   )
   .await?;
   let validated = oidc::validate_id_token(
-    &state.http_client,
+    &state,
     &discovery,
     &provider,
     &token_response.id_token,
@@ -404,6 +404,7 @@ fn oidc_state_cookie(headers: &HeaderMap) -> Option<&str> {
 }
 
 fn build_oidc_state_cookie(state: &AppState, value: &str, max_age_seconds: i64) -> Result<HeaderValue> {
+  validate_oidc_cookie_value(value)?;
   let secure = state.site_url.starts_with("https://");
   let cookie = format!(
     // Lax is required for standard OIDC GET redirects; deployments that want stricter CSRF isolation
@@ -417,6 +418,18 @@ fn build_oidc_state_cookie(state: &AppState, value: &str, max_age_seconds: i64) 
 
 fn clear_oidc_state_cookie(state: &AppState) -> Result<HeaderValue> {
   build_oidc_state_cookie(state, "", 0)
+}
+
+fn validate_oidc_cookie_value(value: &str) -> Result<()> {
+  if value
+    .bytes()
+    .any(|byte| matches!(byte, b';' | b'\r' | b'\n') || byte.is_ascii_control())
+  {
+    return Err(AuthError::ValidationFailed(
+      "OIDC state cookie contains invalid characters".to_string(),
+    ));
+  }
+  Ok(())
 }
 
 async fn fetch_user(db: &sqlx::PgPool, user_id: Uuid) -> Result<User> {
