@@ -1,20 +1,34 @@
 use axum::Json;
-use axum::extract::State;
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use axum::extract::{
+  ConnectInfo,
+  State,
+};
 use chrono::{
   Duration,
   Utc,
 };
-use rand::RngCore;
 use serde::Deserialize;
+use std::net::{
+  IpAddr,
+  SocketAddr,
+};
 
-use crate::error::Result;
+use crate::auth::{
+  rate_limit,
+  session,
+};
+use crate::error::{
+  AuthError,
+  Result,
+};
 use crate::mailer::EmailKind;
 use crate::public::handler::signup::is_valid_email;
 use crate::state::AppState;
+use crate::utils::sha256_hex;
 
 pub(crate) const EMAIL_TOKEN_COOLDOWN_SECONDS: i64 = 60;
+const RECOVER_RATE_LIMIT_WINDOW_SECS: i64 = 900;
+const RECOVER_RATE_LIMIT_ATTEMPTS: u32 = 5;
 
 #[derive(Debug, Deserialize)]
 pub struct RecoverRequest {
@@ -23,8 +37,15 @@ pub struct RecoverRequest {
 
 pub async fn recover(
   State(state): State<AppState>,
+  ConnectInfo(client_addr): ConnectInfo<SocketAddr>,
   Json(req): Json<RecoverRequest>,
 ) -> Result<Json<serde_json::Value>> {
+  let rate_limit_key = recover_ip_rate_limit_key(client_addr.ip());
+  if rate_limit::is_limited(&state.db, &rate_limit_key, RECOVER_RATE_LIMIT_ATTEMPTS).await? {
+    return Err(AuthError::TooManyRequests);
+  }
+  rate_limit::record_attempt(&state.db, &rate_limit_key, RECOVER_RATE_LIMIT_WINDOW_SECS).await?;
+
   if !is_valid_email(&req.email) {
     // Return 200 to avoid leaking which emails are valid
     return Ok(Json(serde_json::json!({})));
@@ -48,14 +69,13 @@ pub async fn recover(
     return Ok(Json(serde_json::json!({})));
   }
 
-  let mut bytes = [0u8; 32];
-  rand::rng().fill_bytes(&mut bytes);
-  let recovery_token = URL_SAFE_NO_PAD.encode(bytes);
+  let recovery_token = session::generate_refresh_token();
+  let recovery_token_hash = sha256_hex(&recovery_token);
 
   sqlx::query(
     "UPDATE auth.users SET recovery_token = $1, recovery_sent_at = $2, updated_at = $3 WHERE id = $4",
   )
-  .bind(&recovery_token)
+  .bind(&recovery_token_hash)
   .bind(now)
   .bind(now)
   .bind(user_id)
@@ -91,6 +111,10 @@ pub(crate) fn email_token_cooldown_active(
   now: chrono::DateTime<Utc>,
 ) -> bool {
   sent_at.is_some_and(|sent_at| sent_at > now - Duration::seconds(EMAIL_TOKEN_COOLDOWN_SECONDS))
+}
+
+fn recover_ip_rate_limit_key(client_ip: IpAddr) -> String {
+  format!("recover-ip:{client_ip}")
 }
 
 #[cfg(test)]

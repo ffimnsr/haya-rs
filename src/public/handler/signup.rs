@@ -1,13 +1,21 @@
 use axum::Json;
-use axum::extract::State;
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use axum::extract::{
+  ConnectInfo,
+  State,
+};
 use chrono::Utc;
-use rand::RngCore;
 use serde::Deserialize;
+use std::net::{
+  IpAddr,
+  SocketAddr,
+};
 use uuid::Uuid;
 
-use crate::auth::password;
+use crate::auth::{
+  password,
+  rate_limit,
+  session,
+};
 use crate::error::{
   AuthError,
   Result,
@@ -16,6 +24,10 @@ use crate::mailer::EmailKind;
 use crate::model::User;
 use crate::public::handler::admin::validate_password_policy;
 use crate::state::AppState;
+use crate::utils::sha256_hex;
+
+const SIGNUP_RATE_LIMIT_WINDOW_SECS: i64 = 900;
+const SIGNUP_RATE_LIMIT_ATTEMPTS: u32 = 10;
 
 #[derive(Debug, Deserialize)]
 pub struct SignupRequest {
@@ -27,8 +39,15 @@ pub struct SignupRequest {
 
 pub async fn signup(
   State(state): State<AppState>,
+  ConnectInfo(client_addr): ConnectInfo<SocketAddr>,
   Json(req): Json<SignupRequest>,
 ) -> Result<Json<serde_json::Value>> {
+  let rate_limit_key = signup_ip_rate_limit_key(client_addr.ip());
+  if rate_limit::is_limited(&state.db, &rate_limit_key, SIGNUP_RATE_LIMIT_ATTEMPTS).await? {
+    return Err(AuthError::TooManyRequests);
+  }
+  rate_limit::record_attempt(&state.db, &rate_limit_key, SIGNUP_RATE_LIMIT_WINDOW_SECS).await?;
+
   if req.email.is_none() {
     return Err(AuthError::ValidationFailed("Email is required.".to_string()));
   }
@@ -74,12 +93,11 @@ pub async fn signup(
 
   // Generate a confirmation token when auto-confirm is disabled.
   let (confirmation_token, confirmation_sent_at) = if !state.mailer_autoconfirm {
-    let mut bytes = [0u8; 32];
-    rand::rng().fill_bytes(&mut bytes);
-    (Some(URL_SAFE_NO_PAD.encode(bytes)), Some(now))
+    (Some(session::generate_refresh_token()), Some(now))
   } else {
     (None, None)
   };
+  let confirmation_token_hash = confirmation_token.as_deref().map(sha256_hex);
 
   let user: User = match sqlx::query_as::<_, User>(
         "INSERT INTO auth.users (id, instance_id, aud, role, email, encrypted_password, phone, raw_app_meta_data, raw_user_meta_data, is_anonymous, confirmation_token, confirmation_sent_at, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_sso_user, is_anonymous, banned_until, deleted_at, created_at, updated_at"
@@ -94,7 +112,7 @@ pub async fn signup(
     .bind(&app_metadata)
     .bind(&user_metadata)
     .bind(false)
-    .bind(&confirmation_token)
+    .bind(&confirmation_token_hash)
     .bind(confirmation_sent_at)
     .bind(now)
     .bind(now)
@@ -133,6 +151,10 @@ pub async fn signup(
 
   let _ = user;
   Ok(Json(serde_json::json!({})))
+}
+
+fn signup_ip_rate_limit_key(client_ip: IpAddr) -> String {
+  format!("signup-ip:{client_ip}")
 }
 
 pub fn is_valid_email(email: &str) -> bool {

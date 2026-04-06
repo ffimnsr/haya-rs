@@ -92,7 +92,10 @@ pub fn create_router(state: AppState) -> Router {
     .route("/health", get(handler::health::health_check))
     .route("/settings", get(handler::settings::get_settings))
     .route("/authorize", get(handler::sso::authorize))
-    .route("/callback", get(handler::sso::callback))
+    .route(
+      "/callback",
+      get(handler::sso::callback).post(handler::sso::callback_form),
+    )
     .route("/signup", post(handler::signup::signup))
     .route("/token", post(handler::token::token))
     .route("/verify", post(handler::verify::verify))

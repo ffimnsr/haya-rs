@@ -507,6 +507,7 @@ struct SettingsView {
   site_name: String,
   redirect_allowed_origins: Vec<String>,
   allowed_redirect_origins: Vec<String>,
+  allowed_redirect_path_prefixes: Vec<String>,
   cors_allowed_origins: Vec<String>,
   jwt_exp: i64,
   refresh_token_exp: i64,
@@ -679,6 +680,7 @@ struct ConfigValidateReport {
   redirect_allowed_origins: Vec<String>,
   cors_allowed_origins: Vec<String>,
   allowed_redirect_origins: Vec<String>,
+  allowed_redirect_path_prefixes: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -793,6 +795,7 @@ fn show_settings(config: &RuntimeConfig) -> anyhow::Result<()> {
     site_name: config.site_name.clone(),
     redirect_allowed_origins: config.redirect_allowed_origins.clone(),
     allowed_redirect_origins: config.allowed_redirect_origins.clone(),
+    allowed_redirect_path_prefixes: config.allowed_redirect_path_prefixes.clone(),
     cors_allowed_origins: config.cors_allowed_origins.clone(),
     jwt_exp: config.jwt_exp,
     refresh_token_exp: config.refresh_token_exp,
@@ -1319,10 +1322,11 @@ async fn reset_user_password(state: &AppState, args: ResetPasswordArgs) -> anyho
     .as_deref()
     .ok_or_else(|| anyhow::anyhow!("user does not have an email address"))?;
   let recovery_token = session::generate_refresh_token();
+  let recovery_token_hash = utils::sha256_hex(&recovery_token);
   sqlx::query(
     "UPDATE auth.users SET recovery_token = $1, recovery_sent_at = $2, updated_at = $3 WHERE id = $4",
   )
-  .bind(&recovery_token)
+  .bind(&recovery_token_hash)
   .bind(now)
   .bind(now)
   .bind(user_id)
@@ -1677,6 +1681,11 @@ fn validate_config(config: &RuntimeConfig) -> anyhow::Result<()> {
       issues.push(format!("invalid redirect origin: {origin}"));
     }
   }
+  for prefix in &config.allowed_redirect_path_prefixes {
+    if !prefix.starts_with('/') {
+      issues.push(format!("invalid redirect path prefix: {prefix}"));
+    }
+  }
 
   print_json(&ConfigValidateReport {
     valid: issues.is_empty(),
@@ -1688,6 +1697,7 @@ fn validate_config(config: &RuntimeConfig) -> anyhow::Result<()> {
     redirect_allowed_origins: config.redirect_allowed_origins.clone(),
     cors_allowed_origins: config.cors_allowed_origins.clone(),
     allowed_redirect_origins: config.allowed_redirect_origins.clone(),
+    allowed_redirect_path_prefixes: config.allowed_redirect_path_prefixes.clone(),
   })
 }
 

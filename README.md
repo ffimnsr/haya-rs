@@ -201,6 +201,8 @@ Supported command groups:
 - `INSTANCE_ID`: explicit UUID for the auth instance.
 - `MAILER_AUTOCONFIRM`: enables automatic confirmation when set to `true` or `1`.
 - `CORS_ALLOWED_ORIGINS`: comma-separated list of allowed origins. Also used as the allowlist for OIDC `redirect_to` origins alongside `SITE_URL`. If omitted, CORS is permissive.
+- `ALLOWED_REDIRECT_PATH_PREFIXES`: optional comma-separated list of allowed path prefixes for OIDC `redirect_to` URLs. When set, redirects must match both an allowed origin and one of these prefixes.
+- `OIDC_RESPONSE_MODE`: set to `form_post` to request OIDC providers post the callback to `/callback` instead of using the default query redirect.
 - `HAYA_DEV_MODE`: enables an insecure built-in JWT secret for local development only.
 - `HAYA_PID_FILE`: overrides the pid file path used by `haya reload` and `haya doctor`. Defaults to `/tmp/haya.pid`.
 
@@ -251,7 +253,9 @@ Start the browser flow with:
 curl -i "http://localhost:9999/authorize?provider=acme&redirect_to=http://localhost:3000/auth/callback"
 ```
 
-`redirect_to` must stay on `SITE_URL` or one of the configured `CORS_ALLOWED_ORIGINS`.
+`redirect_to` must stay on `SITE_URL` or one of the configured `CORS_ALLOWED_ORIGINS`. If you set `ALLOWED_REDIRECT_PATH_PREFIXES`, it must also stay under one of those path prefixes.
+
+If your identity provider supports it, set `OIDC_RESPONSE_MODE=form_post` to request a POST callback to `/callback`. This is the stricter browser-side option and pairs with Haya's POST `/callback` handler.
 
 After a successful provider login, Haya creates or reuses the mapped identity, then redirects to `redirect_to?code=<one-time-code>`. Exchange that code through `POST /token?grant_type=oidc_callback` to receive the normal token payload.
 

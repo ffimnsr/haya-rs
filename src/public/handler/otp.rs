@@ -1,19 +1,32 @@
 use axum::Json;
-use axum::extract::State;
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use axum::extract::{
+  ConnectInfo,
+  State,
+};
 use chrono::Utc;
-use rand::RngCore;
 use serde::Deserialize;
+use std::net::{
+  IpAddr,
+  SocketAddr,
+};
 use uuid::Uuid;
 
+use crate::auth::{
+  rate_limit,
+  session,
+};
 use crate::error::{
   AuthError,
   Result,
 };
 use crate::mailer::EmailKind;
+use crate::public::handler::recover::email_token_cooldown_active;
 use crate::public::handler::signup::is_valid_email;
 use crate::state::AppState;
+use crate::utils::sha256_hex;
+
+const OTP_RATE_LIMIT_WINDOW_SECS: i64 = 900;
+const OTP_RATE_LIMIT_ATTEMPTS: u32 = 5;
 
 #[derive(Debug, Deserialize)]
 pub struct OtpRequest {
@@ -33,36 +46,48 @@ pub struct MagicLinkRequest {
 
 pub async fn send_otp(
   State(state): State<AppState>,
+  ConnectInfo(client_addr): ConnectInfo<SocketAddr>,
   Json(req): Json<OtpRequest>,
 ) -> Result<Json<serde_json::Value>> {
+  let rate_limit_key = otp_ip_rate_limit_key(client_addr.ip());
+  if rate_limit::is_limited(&state.db, &rate_limit_key, OTP_RATE_LIMIT_ATTEMPTS).await? {
+    return Err(AuthError::TooManyRequests);
+  }
+  rate_limit::record_attempt(&state.db, &rate_limit_key, OTP_RATE_LIMIT_WINDOW_SECS).await?;
+
   if let Some(ref email) = req.email {
     if !is_valid_email(email) {
       return Err(AuthError::ValidationFailed("Invalid email format".to_string()));
     }
     let _create_user = req.create_user.unwrap_or(false);
 
-    let existing: Option<(Uuid,)> =
-      sqlx::query_as::<_, (Uuid,)>("SELECT id FROM auth.users WHERE email = $1")
-        .bind(email)
-        .fetch_optional(&state.db)
-        .await?;
+    let existing: Option<(Uuid, Option<chrono::DateTime<Utc>>)> =
+      sqlx::query_as::<_, (Uuid, Option<chrono::DateTime<Utc>>)>(
+        "SELECT id, magic_link_sent_at FROM auth.users WHERE email = $1",
+      )
+      .bind(email)
+      .fetch_optional(&state.db)
+      .await?;
 
-    let user_id = if let Some((id,)) = existing {
-      id
+    let (user_id, magic_link_sent_at) = if let Some((id, magic_link_sent_at)) = existing {
+      (id, magic_link_sent_at)
     } else {
       // Do not create auth.users rows until the mailbox is proven by a completed verification flow.
       return Ok(Json(serde_json::json!({})));
     };
 
-    let mut bytes = [0u8; 32];
-    rand::rng().fill_bytes(&mut bytes);
-    let token = URL_SAFE_NO_PAD.encode(bytes);
+    let token = session::generate_refresh_token();
+    let token_hash = sha256_hex(&token);
     let now = Utc::now();
+    if email_token_cooldown_active(magic_link_sent_at, now) {
+      tracing::info!("Magic link regeneration suppressed by cooldown");
+      return Ok(Json(serde_json::json!({})));
+    }
 
     sqlx::query(
       "UPDATE auth.users SET magic_link_token = $1, magic_link_sent_at = $2, updated_at = $3 WHERE id = $4",
     )
-    .bind(&token)
+    .bind(&token_hash)
     .bind(now)
     .bind(now)
     .bind(user_id)
@@ -97,6 +122,7 @@ pub async fn send_otp(
 
 pub async fn magiclink(
   State(state): State<AppState>,
+  ConnectInfo(client_addr): ConnectInfo<SocketAddr>,
   Json(req): Json<MagicLinkRequest>,
 ) -> Result<Json<serde_json::Value>> {
   let otp_req = OtpRequest {
@@ -105,5 +131,9 @@ pub async fn magiclink(
     create_user: Some(false),
     data: None,
   };
-  send_otp(State(state), Json(otp_req)).await
+  send_otp(State(state), ConnectInfo(client_addr), Json(otp_req)).await
+}
+
+fn otp_ip_rate_limit_key(client_ip: IpAddr) -> String {
+  format!("otp-ip:{client_ip}")
 }

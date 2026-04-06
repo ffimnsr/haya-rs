@@ -5,10 +5,6 @@ use axum::extract::{
 };
 use chrono::Utc;
 use serde::Deserialize;
-use sha2::{
-  Digest,
-  Sha256,
-};
 use std::net::{
   IpAddr,
   SocketAddr,
@@ -29,6 +25,7 @@ use crate::model::{
 };
 use crate::public::handler::mfa;
 use crate::state::AppState;
+use crate::utils::sha256_hex;
 
 const VERIFY_RATE_LIMIT_WINDOW_SECS: u64 = 900;
 const VERIFY_RATE_LIMIT_ATTEMPTS: u32 = 10;
@@ -125,7 +122,7 @@ async fn consume_confirmation_token(
         "UPDATE auth.users SET email_confirmed_at = COALESCE(email_confirmed_at, $1), confirmation_token = NULL, updated_at = $1 WHERE confirmation_token = $2 AND confirmation_sent_at > NOW() - INTERVAL '24 hours' RETURNING id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, COALESCE(confirmed_at, email_confirmed_at, phone_confirmed_at) as confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_sso_user, is_anonymous, banned_until, deleted_at, created_at, updated_at"
     )
     .bind(now)
-    .bind(token)
+    .bind(sha256_hex(token))
     .fetch_optional(&state.db)
     .await?;
   let Some(user) = user else {
@@ -159,7 +156,7 @@ async fn consume_recovery_token(
         "UPDATE auth.users SET recovery_token = NULL, updated_at = $1 WHERE recovery_token = $2 AND recovery_sent_at > NOW() - INTERVAL '1 hour' RETURNING id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, COALESCE(confirmed_at, email_confirmed_at, phone_confirmed_at) as confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_sso_user, is_anonymous, banned_until, deleted_at, created_at, updated_at"
     )
     .bind(now)
-    .bind(token)
+    .bind(sha256_hex(token))
     .fetch_optional(&state.db)
     .await?;
   let Some(user) = user else {
@@ -193,7 +190,7 @@ async fn consume_magic_link_token(
         "UPDATE auth.users SET email_confirmed_at = COALESCE(email_confirmed_at, $1), magic_link_token = NULL, magic_link_sent_at = NULL, updated_at = $1 WHERE magic_link_token = $2 AND magic_link_sent_at > NOW() - INTERVAL '24 hours' RETURNING id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, COALESCE(confirmed_at, email_confirmed_at, phone_confirmed_at) as confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_sso_user, is_anonymous, banned_until, deleted_at, created_at, updated_at"
     )
     .bind(now)
-    .bind(token)
+    .bind(sha256_hex(token))
     .fetch_optional(&state.db)
     .await?;
   let Some(user) = user else {
@@ -211,8 +208,7 @@ async fn consume_magic_link_token(
 }
 
 fn verify_rate_limit_key(prefix: &str, token: &str, client_ip: IpAddr) -> String {
-  let digest = Sha256::digest(token.as_bytes());
-  format!("{prefix}:{client_ip}:{digest:x}")
+  format!("{prefix}:{client_ip}:{}", sha256_hex(token))
 }
 
 fn verify_ip_rate_limit_key(prefix: &str, client_ip: IpAddr) -> String {

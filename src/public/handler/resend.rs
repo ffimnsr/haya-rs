@@ -1,11 +1,19 @@
 use axum::Json;
-use axum::extract::State;
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use axum::extract::{
+  ConnectInfo,
+  State,
+};
 use chrono::Utc;
-use rand::RngCore;
 use serde::Deserialize;
+use std::net::{
+  IpAddr,
+  SocketAddr,
+};
 
+use crate::auth::{
+  rate_limit,
+  session,
+};
 use crate::error::{
   AuthError,
   Result,
@@ -14,6 +22,10 @@ use crate::mailer::EmailKind;
 use crate::public::handler::recover::email_token_cooldown_active;
 use crate::public::handler::signup::is_valid_email;
 use crate::state::AppState;
+use crate::utils::sha256_hex;
+
+const RESEND_RATE_LIMIT_WINDOW_SECS: i64 = 900;
+const RESEND_RATE_LIMIT_ATTEMPTS: u32 = 5;
 
 #[derive(Debug, Deserialize)]
 pub struct ResendRequest {
@@ -34,8 +46,15 @@ struct ResendUserRow {
 
 pub async fn resend(
   State(state): State<AppState>,
+  ConnectInfo(client_addr): ConnectInfo<SocketAddr>,
   Json(req): Json<ResendRequest>,
 ) -> Result<Json<serde_json::Value>> {
+  let rate_limit_key = resend_ip_rate_limit_key(client_addr.ip());
+  if rate_limit::is_limited(&state.db, &rate_limit_key, RESEND_RATE_LIMIT_ATTEMPTS).await? {
+    return Err(AuthError::TooManyRequests);
+  }
+  rate_limit::record_attempt(&state.db, &rate_limit_key, RESEND_RATE_LIMIT_WINDOW_SECS).await?;
+
   let email = req
     .email
     .as_deref()
@@ -58,44 +77,49 @@ pub async fn resend(
     recovery_sent_at,
   }) = user_id
   else {
+    let _ = sqlx::query("SELECT 1").execute(&state.db).await?;
     return Ok(Json(serde_json::json!({})));
   };
-  let mut bytes = [0u8; 32];
-  rand::rng().fill_bytes(&mut bytes);
-  let token = URL_SAFE_NO_PAD.encode(bytes);
+  let token = session::generate_refresh_token();
+  let token_hash = sha256_hex(&token);
   let now = Utc::now();
 
   match req.resend_type.as_str() {
     "signup" => {
       if email_token_cooldown_active(confirmation_sent_at, now) {
         tracing::info!("Signup confirmation regeneration suppressed by cooldown");
+        let _ = sqlx::query("SELECT 1").execute(&state.db).await?;
         return Ok(Json(serde_json::json!({})));
       }
       sqlx::query(
                 "UPDATE auth.users SET confirmation_token = $1, confirmation_sent_at = $2, updated_at = $3 WHERE id = $4"
             )
-            .bind(&token)
+            .bind(&token_hash)
             .bind(now)
             .bind(now)
             .bind(user_id)
             .execute(&state.db)
             .await?;
       let confirmation_url = format!("{}/verify?token={}&type=signup", state.site_url, token);
-      if let Some(ref mailer) = state.mailer {
-        if let Err(e) = mailer
-          .send(
-            EmailKind::Confirmation,
-            email,
-            &[
-              ("site_name", state.site_name.as_str()),
-              ("confirmation_url", confirmation_url.as_str()),
-              ("email", email),
-            ],
-          )
-          .await
-        {
-          tracing::error!(error = %e, "Failed to resend confirmation email");
-        }
+      if let Some(mailer) = state.mailer.clone() {
+        let site_name = state.site_name.clone();
+        let email = email.to_string();
+        tokio::spawn(async move {
+          if let Err(e) = mailer
+            .send(
+              EmailKind::Confirmation,
+              &email,
+              &[
+                ("site_name", site_name.as_str()),
+                ("confirmation_url", confirmation_url.as_str()),
+                ("email", email.as_str()),
+              ],
+            )
+            .await
+          {
+            tracing::error!(error = %e, "Failed to resend confirmation email");
+          }
+        });
       } else {
         tracing::warn!("SMTP not configured; confirmation email not sent");
       }
@@ -104,33 +128,38 @@ pub async fn resend(
     "recovery" => {
       if email_token_cooldown_active(recovery_sent_at, now) {
         tracing::info!("Recovery token regeneration suppressed by cooldown");
+        let _ = sqlx::query("SELECT 1").execute(&state.db).await?;
         return Ok(Json(serde_json::json!({})));
       }
       sqlx::query(
         "UPDATE auth.users SET recovery_token = $1, recovery_sent_at = $2, updated_at = $3 WHERE id = $4",
       )
-      .bind(&token)
+      .bind(&token_hash)
       .bind(now)
       .bind(now)
       .bind(user_id)
       .execute(&state.db)
       .await?;
       let recovery_url = format!("{}/verify?token={}&type=recovery", state.site_url, token);
-      if let Some(ref mailer) = state.mailer {
-        if let Err(e) = mailer
-          .send(
-            EmailKind::Recovery,
-            email,
-            &[
-              ("site_name", state.site_name.as_str()),
-              ("recovery_url", recovery_url.as_str()),
-              ("email", email),
-            ],
-          )
-          .await
-        {
-          tracing::error!(error = %e, "Failed to resend recovery email");
-        }
+      if let Some(mailer) = state.mailer.clone() {
+        let site_name = state.site_name.clone();
+        let email = email.to_string();
+        tokio::spawn(async move {
+          if let Err(e) = mailer
+            .send(
+              EmailKind::Recovery,
+              &email,
+              &[
+                ("site_name", site_name.as_str()),
+                ("recovery_url", recovery_url.as_str()),
+                ("email", email.as_str()),
+              ],
+            )
+            .await
+          {
+            tracing::error!(error = %e, "Failed to resend recovery email");
+          }
+        });
       } else {
         tracing::warn!("SMTP not configured; recovery email not sent");
       }
@@ -145,4 +174,8 @@ pub async fn resend(
   }
 
   Ok(Json(serde_json::json!({})))
+}
+
+fn resend_ip_rate_limit_key(client_ip: IpAddr) -> String {
+  format!("resend-ip:{client_ip}")
 }

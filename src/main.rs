@@ -116,6 +116,19 @@ fn parse_origin_list_env(name: &str) -> Vec<String> {
     .unwrap_or_default()
 }
 
+fn parse_path_prefix_list_env(name: &str) -> Vec<String> {
+  env::var(name)
+    .map(|value| {
+      value
+        .split(',')
+        .map(str::trim)
+        .filter(|value| value.starts_with('/'))
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>()
+    })
+    .unwrap_or_default()
+}
+
 fn env_flag_enabled(name: &str) -> bool {
   env::var(name)
     .map(|value| {
@@ -195,6 +208,10 @@ fn build_runtime_bootstrap(require_database: bool) -> anyhow::Result<RuntimeBoot
   let site_url = env::var("SITE_URL").unwrap_or_else(|_| "http://localhost:9999".to_string());
   let cors_allowed_origins = parse_origin_list_env("CORS_ALLOWED_ORIGINS");
   let redirect_allowed_origins = parse_origin_list_env("ALLOWED_REDIRECT_ORIGINS");
+  let allowed_redirect_path_prefixes = parse_path_prefix_list_env("ALLOWED_REDIRECT_PATH_PREFIXES");
+  let oidc_form_post = env::var("OIDC_RESPONSE_MODE")
+    .map(|value| value.trim().eq_ignore_ascii_case("form_post"))
+    .unwrap_or(false);
   let mut allowed_redirect_origins = vec![origin_from_url(&site_url)?];
   for origin in &redirect_allowed_origins {
     allowed_redirect_origins.push(origin_from_url(origin)?);
@@ -264,6 +281,8 @@ fn build_runtime_bootstrap(require_database: bool) -> anyhow::Result<RuntimeBoot
     site_url,
     redirect_allowed_origins,
     allowed_redirect_origins,
+    allowed_redirect_path_prefixes,
+    oidc_form_post,
     cors_allowed_origins,
     site_name,
     issuer,
@@ -302,6 +321,8 @@ async fn build_app_state(bootstrap: &RuntimeBootstrap) -> anyhow::Result<AppStat
     session_idle_timeout_secs: bootstrap.config.session_idle_timeout_secs,
     site_url: bootstrap.config.site_url.clone(),
     allowed_redirect_origins: bootstrap.config.allowed_redirect_origins.clone(),
+    allowed_redirect_path_prefixes: bootstrap.config.allowed_redirect_path_prefixes.clone(),
+    oidc_form_post: bootstrap.config.oidc_form_post,
     site_name: bootstrap.config.site_name.clone(),
     issuer: bootstrap.config.issuer.clone(),
     instance_id: bootstrap.instance_id,

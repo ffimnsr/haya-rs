@@ -1,4 +1,5 @@
 use axum::extract::{
+  Form,
   Query,
   State,
 };
@@ -50,6 +51,12 @@ pub struct AuthorizeQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct CallbackQuery {
+  pub code: String,
+  pub state: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CallbackForm {
   pub code: String,
   pub state: String,
 }
@@ -115,7 +122,7 @@ pub async fn authorize(
   .execute(&state.db)
   .await?;
 
-  let auth_url = oidc::build_authorization_url(&discovery, &provider, &flow)?;
+  let auth_url = oidc::build_authorization_url(&discovery, &provider, &flow, state.oidc_form_post)?;
   let mut response = Redirect::to(auth_url.as_str()).into_response();
   response.headers_mut().append(
     SET_COOKIE,
@@ -129,14 +136,31 @@ pub async fn callback(
   headers: HeaderMap,
   Query(query): Query<CallbackQuery>,
 ) -> Result<Response> {
-  if oidc_state_cookie(&headers) != Some(query.state.as_str()) {
+  handle_callback(state, headers, query.code, query.state).await
+}
+
+pub async fn callback_form(
+  State(state): State<AppState>,
+  headers: HeaderMap,
+  Form(form): Form<CallbackForm>,
+) -> Result<Response> {
+  handle_callback(state, headers, form.code, form.state).await
+}
+
+async fn handle_callback(
+  state: AppState,
+  headers: HeaderMap,
+  code: String,
+  state_param: String,
+) -> Result<Response> {
+  if oidc_state_cookie(&headers) != Some(state_param.as_str()) {
     return Err(AuthError::InvalidToken);
   }
 
   let flow: FlowStateRow = sqlx::query_as::<_, FlowStateRow>(
     "DELETE FROM auth.flow_state WHERE auth_code = $1 RETURNING id, provider_type, auth_code, provider_access_token, provider_refresh_token, pkce_verifier, nonce, redirect_to, expires_at",
   )
-  .bind(&query.state)
+  .bind(&state_param)
   .fetch_optional(&state.db)
   .await?
   .ok_or(AuthError::InvalidToken)?;
@@ -161,7 +185,7 @@ pub async fn callback(
     &state.http_client,
     &discovery,
     &provider,
-    &query.code,
+    &code,
     flow.pkce_verifier.as_deref(),
   )
   .await?;
@@ -248,6 +272,9 @@ async fn provision_sso_user(
         .fetch_optional(&state.db)
         .await?;
     if let Some(existing_user) = existing {
+      if !can_auto_link_sso_user(&existing_user) {
+        return Err(AuthError::NotAuthorized);
+      }
       return link_sso_user(state, provider, profile, existing_user, now).await;
     }
   }
@@ -334,6 +361,10 @@ async fn link_sso_user(
   fetch_user(&state.db, user.id).await
 }
 
+fn can_auto_link_sso_user(user: &User) -> bool {
+  user.email_confirmed_at.is_some() && user.encrypted_password.is_none()
+}
+
 fn merged_app_metadata(existing: Option<serde_json::Value>, provider_name: &str) -> serde_json::Value {
   let mut metadata = match existing {
     Some(serde_json::Value::Object(map)) => serde_json::Value::Object(map),
@@ -375,6 +406,8 @@ fn oidc_state_cookie(headers: &HeaderMap) -> Option<&str> {
 fn build_oidc_state_cookie(state: &AppState, value: &str, max_age_seconds: i64) -> Result<HeaderValue> {
   let secure = state.site_url.starts_with("https://");
   let cookie = format!(
+    // Lax is required for standard OIDC GET redirects; deployments that want stricter CSRF isolation
+    // can switch providers to form_post and use the POST callback handler.
     "{OIDC_STATE_COOKIE_NAME}={value}; Max-Age={max_age_seconds}; Path=/callback; HttpOnly; SameSite=Lax{}",
     if secure { "; Secure" } else { "" }
   );
@@ -485,6 +518,16 @@ fn validated_redirect_to(state: &AppState, redirect_to: Option<&str>) -> Result<
       "redirect_to origin is not allowed".to_string(),
     ));
   }
+  if !state.allowed_redirect_path_prefixes.is_empty()
+    && !state
+      .allowed_redirect_path_prefixes
+      .iter()
+      .any(|prefix| url.path().starts_with(prefix))
+  {
+    return Err(AuthError::ValidationFailed(
+      "redirect_to path is not allowed".to_string(),
+    ));
+  }
 
   Ok(url.to_string())
 }
@@ -492,6 +535,47 @@ fn validated_redirect_to(state: &AppState, redirect_to: Option<&str>) -> Result<
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  fn sample_user() -> User {
+    User {
+      id: Uuid::nil(),
+      instance_id: None,
+      aud: None,
+      role: None,
+      email: Some("user@example.com".to_string()),
+      encrypted_password: None,
+      email_confirmed_at: Some(Utc::now()),
+      phone: None,
+      phone_confirmed_at: None,
+      confirmed_at: None,
+      last_sign_in_at: None,
+      raw_app_meta_data: None,
+      raw_user_meta_data: None,
+      is_super_admin: None,
+      is_sso_user: false,
+      is_anonymous: false,
+      banned_until: None,
+      deleted_at: None,
+      created_at: None,
+      updated_at: None,
+    }
+  }
+
+  #[test]
+  fn auto_link_requires_confirmed_email() {
+    let mut user = sample_user();
+    user.email_confirmed_at = None;
+
+    assert!(!can_auto_link_sso_user(&user));
+  }
+
+  #[test]
+  fn auto_link_rejects_password_accounts() {
+    let mut user = sample_user();
+    user.encrypted_password = Some("hash".to_string());
+
+    assert!(!can_auto_link_sso_user(&user));
+  }
 
   #[test]
   fn appends_one_time_code_query_to_redirect() {

@@ -3,9 +3,18 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Context;
+use sha2::{
+  Digest,
+  Sha256,
+};
 use tokio::signal;
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
+
+pub fn sha256_hex(value: &str) -> String {
+  let digest = Sha256::digest(value.as_bytes());
+  format!("{digest:x}")
+}
 
 pub async fn shutdown_signal() {
   let ctrl_c = async {

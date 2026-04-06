@@ -400,6 +400,8 @@ mod tests {
       session_idle_timeout_secs,
       site_url: "http://localhost:9999".to_string(),
       allowed_redirect_origins: vec![],
+      allowed_redirect_path_prefixes: vec![],
+      oidc_form_post: false,
       site_name: "Haya".to_string(),
       issuer: "http://localhost:9999".to_string(),
       instance_id: Uuid::nil(),

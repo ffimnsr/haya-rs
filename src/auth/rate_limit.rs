@@ -13,7 +13,15 @@ pub async fn is_limited(db: &PgPool, key: &str, max_attempts: u32) -> Result<boo
   Ok(row.is_some_and(|(attempts,)| attempts >= max_attempts as i32))
 }
 
+pub async fn record_attempt(db: &PgPool, key: &str, window_secs: i64) -> Result<()> {
+  upsert_attempt_window(db, key, window_secs).await
+}
+
 pub async fn record_failure(db: &PgPool, key: &str, window_secs: i64) -> Result<()> {
+  upsert_attempt_window(db, key, window_secs).await
+}
+
+async fn upsert_attempt_window(db: &PgPool, key: &str, window_secs: i64) -> Result<()> {
   sqlx::query(
     "INSERT INTO auth.rate_limits (key, attempts, expires_at, created_at, updated_at)
      VALUES ($1, 1, NOW() + make_interval(secs => $2), NOW(), NOW())

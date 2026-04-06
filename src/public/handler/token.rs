@@ -37,6 +37,7 @@ use crate::state::AppState;
 
 const PASSWORD_GRANT_RATE_LIMIT_ATTEMPTS: u32 = 10;
 const PASSWORD_GRANT_RATE_LIMIT_WINDOW_SECS: u64 = 300;
+const PASSWORD_GRANT_IP_RATE_LIMIT_ATTEMPTS: u32 = 15;
 
 #[derive(Debug, Deserialize)]
 pub struct TokenQuery {
@@ -86,7 +87,7 @@ async fn handle_password_grant(
     || rate_limit::is_limited(
       &state.db,
       &ip_rate_limit_key,
-      PASSWORD_GRANT_RATE_LIMIT_ATTEMPTS * 3,
+      PASSWORD_GRANT_IP_RATE_LIMIT_ATTEMPTS,
     )
     .await?
   {
@@ -215,14 +216,37 @@ async fn handle_refresh_grant(state: AppState, body: serde_json::Value) -> Resul
   let mut tx = state.db.begin().await?;
 
   let rt: RefreshToken = sqlx::query_as::<_, RefreshToken>(
-        "UPDATE auth.refresh_tokens SET revoked = true, updated_at = $1 WHERE token = $2 AND revoked = false AND created_at >= $3 RETURNING id, instance_id, user_id, token, created_at, updated_at, parent, session_id, revoked"
-    )
+    "SELECT id, instance_id, user_id, token, created_at, updated_at, parent, session_id, revoked
+     FROM auth.refresh_tokens
+     WHERE token = $1
+     FOR UPDATE",
+  )
+  .bind(rt_str)
+  .fetch_optional(&mut *tx)
+  .await?
+  .ok_or(AuthError::InvalidToken)?;
+
+  if rt.revoked.unwrap_or(false) {
+    if let Some(session_id) = rt.session_id {
+      revoke_refresh_token_family(&mut tx, session_id, now).await?;
+      tx.commit().await?;
+    }
+    return Err(AuthError::InvalidToken);
+  }
+
+  if rt
+    .created_at
+    .map(|created_at| created_at < now - refresh_expires_after)
+    .unwrap_or(true)
+  {
+    return Err(AuthError::InvalidToken);
+  }
+
+  sqlx::query("UPDATE auth.refresh_tokens SET revoked = true, updated_at = $1 WHERE id = $2")
     .bind(now)
-    .bind(rt_str)
-    .bind(now - refresh_expires_after)
-    .fetch_optional(&mut *tx)
-    .await?
-    .ok_or(AuthError::InvalidToken)?;
+    .bind(rt.id)
+    .execute(&mut *tx)
+    .await?;
 
   let session_id = rt.session_id.ok_or(AuthError::SessionNotFound)?;
   let user_id_str = rt.user_id.ok_or(AuthError::UserNotFound)?;
@@ -317,9 +341,30 @@ async fn handle_mfa_totp_grant(
 }
 
 fn password_grant_rate_limit_key(email: &str, client_ip: IpAddr) -> String {
-  format!("password:{}:{client_ip}", email.trim().to_ascii_lowercase())
+  let normalized_email = email.trim().to_ascii_lowercase();
+  format!(
+    "password:{}:{client_ip}",
+    crate::utils::sha256_hex(&normalized_email)
+  )
 }
 
 fn password_grant_ip_rate_limit_key(client_ip: IpAddr) -> String {
   format!("password-ip:{client_ip}")
+}
+
+async fn revoke_refresh_token_family(
+  tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+  session_id: Uuid,
+  now: chrono::DateTime<Utc>,
+) -> Result<()> {
+  sqlx::query("UPDATE auth.refresh_tokens SET revoked = true, updated_at = $1 WHERE session_id = $2")
+    .bind(now)
+    .bind(session_id)
+    .execute(&mut **tx)
+    .await?;
+  sqlx::query("DELETE FROM auth.sessions WHERE id = $1")
+    .bind(session_id)
+    .execute(&mut **tx)
+    .await?;
+  Ok(())
 }

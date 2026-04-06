@@ -20,6 +20,8 @@ pub struct AppState {
   /// Base URL of the site (used for generating email links in recovery/confirmation)
   pub site_url: String,
   pub allowed_redirect_origins: Vec<String>,
+  pub allowed_redirect_path_prefixes: Vec<String>,
+  pub oidc_form_post: bool,
   /// Display name shown in email templates (env: `SITE_NAME`)
   pub site_name: String,
   pub issuer: String,
@@ -38,6 +40,8 @@ pub struct RuntimeConfig {
   pub site_url: String,
   pub redirect_allowed_origins: Vec<String>,
   pub allowed_redirect_origins: Vec<String>,
+  pub allowed_redirect_path_prefixes: Vec<String>,
+  pub oidc_form_post: bool,
   pub cors_allowed_origins: Vec<String>,
   pub site_name: String,
   pub issuer: String,

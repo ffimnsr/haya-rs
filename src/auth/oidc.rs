@@ -215,6 +215,7 @@ pub fn build_authorization_url(
   discovery: &OidcDiscoveryDocument,
   config: &OidcProviderConfig,
   flow: &OidcFlowTokens,
+  use_form_post: bool,
 ) -> Result<Url, AuthError> {
   let mut url = Url::parse(&discovery.authorization_endpoint)
     .map_err(|e| AuthError::InternalError(format!("invalid authorization endpoint: {e}")))?;
@@ -225,6 +226,9 @@ pub fn build_authorization_url(
   query.append_pair("state", &flow.state);
   query.append_pair("nonce", &flow.nonce);
   query.append_pair("scope", &config.scopes.join(" "));
+  if use_form_post {
+    query.append_pair("response_mode", "form_post");
+  }
 
   if let Some(ref verifier) = flow.pkce_verifier {
     query.append_pair("code_challenge_method", "S256");
@@ -597,7 +601,7 @@ mod tests {
       pkce_verifier: Some("verifier".to_string()),
     };
 
-    let url = build_authorization_url(&discovery, &config, &flow).unwrap();
+    let url = build_authorization_url(&discovery, &config, &flow, false).unwrap();
     let query = url.query_pairs().collect::<HashMap<_, _>>();
 
     assert_eq!(query.get("response_type"), Some(&"code".into()));
