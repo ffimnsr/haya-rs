@@ -81,8 +81,18 @@ async fn handle_recovery_verify(
     return Ok(Json(VerifyGrantResponse::PendingMfa(pending)));
   }
 
-  let response =
-    session::issue_session_with_context(&state, &user, "aal1", None, vec!["recovery".to_string()]).await?;
+  let response = session::issue_session_with_client_context(
+    &state,
+    &user,
+    "aal1",
+    None,
+    vec!["recovery".to_string()],
+    session::ClientContext {
+      user_agent: None,
+      ip: Some(client_ip),
+    },
+  )
+  .await?;
   Ok(Json(VerifyGrantResponse::Token(Box::new(response))))
 }
 
@@ -100,8 +110,18 @@ async fn handle_magiclink_verify(
     return Ok(Json(VerifyGrantResponse::PendingMfa(pending)));
   }
 
-  let response =
-    session::issue_session_with_context(&state, &user, "aal1", None, vec!["magiclink".to_string()]).await?;
+  let response = session::issue_session_with_client_context(
+    &state,
+    &user,
+    "aal1",
+    None,
+    vec!["magiclink".to_string()],
+    session::ClientContext {
+      user_agent: None,
+      ip: Some(client_ip),
+    },
+  )
+  .await?;
   Ok(Json(VerifyGrantResponse::Token(Box::new(response))))
 }
 

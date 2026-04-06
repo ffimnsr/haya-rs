@@ -323,6 +323,8 @@ pub struct SessionRow {
   pub factor_id: Option<Uuid>,
   pub aal: Option<String>,
   pub not_after: Option<DateTime<Utc>>,
+  pub user_agent: Option<String>,
+  pub ip: Option<String>,
   pub refreshed_at: Option<chrono::NaiveDateTime>,
   pub created_at: Option<DateTime<Utc>>,
   pub updated_at: Option<DateTime<Utc>>,

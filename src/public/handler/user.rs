@@ -9,6 +9,7 @@ use std::net::SocketAddr;
 use uuid::Uuid;
 
 use crate::auth::{
+  audit,
   password,
   session,
 };
@@ -96,6 +97,17 @@ pub async fn update_user(
       .bind(current_session_id)
       .execute(&mut *tx)
       .await?;
+    audit::log_event_tx(
+      tx.as_mut(),
+      state.instance_id,
+      Some(client_addr.ip()),
+      "user_password_changed",
+      serde_json::json!({
+        "user_id": user_id,
+        "revoked_other_sessions": true,
+      }),
+    )
+    .await?;
   }
 
   if let Some(ref meta) = req.data {

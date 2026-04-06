@@ -60,6 +60,11 @@ pub async fn signup(
   if let Some(ref password) = req.password {
     validate_password_policy(password)?;
   }
+  if req.password.is_none() && state.mailer.is_none() {
+    return Err(AuthError::ValidationFailed(
+      "Passwordless signups require SMTP to be configured.".to_string(),
+    ));
+  }
   if let Some(ref phone) = req.phone
     && !is_valid_e164_phone(phone)
   {
@@ -77,6 +82,7 @@ pub async fn signup(
         .await?;
 
     if existing.is_some() {
+      password::burn_password_work(req.password.as_deref().unwrap_or("passwordless-signup-padding"))?;
       return Ok(Json(serde_json::json!({})));
     }
   }
@@ -120,6 +126,7 @@ pub async fn signup(
     .await {
     Ok(user) => user,
     Err(sqlx::Error::Database(err)) if err.is_unique_violation() => {
+      password::burn_password_work(req.password.as_deref().unwrap_or("passwordless-signup-padding"))?;
       return Ok(Json(serde_json::json!({})));
     },
     Err(err) => return Err(err.into()),

@@ -14,6 +14,7 @@ use std::net::{
 use uuid::Uuid;
 
 use crate::auth::{
+  audit,
   password,
   rate_limit,
   session,
@@ -29,7 +30,6 @@ use crate::model::{
   TokenResponse,
   User,
 };
-use crate::public::handler::admin::validate_password_policy;
 use crate::public::handler::{
   mfa,
   sso,
@@ -55,14 +55,18 @@ pub async fn token(
 ) -> Result<Json<TokenGrantResponse>> {
   let client_ip = client_addr.ip();
   match query.grant_type.as_str() {
-    "password" => handle_password_grant(state, client_ip, body).await.map(Json),
-    "refresh_token" => handle_refresh_grant(state, body)
+    "password" => handle_password_grant(state, client_ip, user_agent_from_headers(&headers), body)
+      .await
+      .map(Json),
+    "refresh_token" => handle_refresh_grant(state, client_ip, user_agent_from_headers(&headers), body)
       .await
       .map(|response| Json(TokenGrantResponse::Token(Box::new(response)))),
     "mfa_totp" => handle_mfa_totp_grant(state, headers, client_ip, body)
       .await
       .map(|response| Json(TokenGrantResponse::Token(Box::new(response)))),
-    "oidc_callback" => sso::exchange_callback_code(state, body).await.map(Json),
+    "oidc_callback" => sso::exchange_callback_code(state, client_ip, body)
+      .await
+      .map(Json),
     _ => Err(AuthError::ValidationFailed(format!(
       "Unsupported grant_type: {}",
       query.grant_type
@@ -73,6 +77,7 @@ pub async fn token(
 async fn handle_password_grant(
   state: AppState,
   client_ip: IpAddr,
+  user_agent: Option<String>,
   body: serde_json::Value,
 ) -> Result<TokenGrantResponse> {
   let email = body
@@ -103,6 +108,17 @@ async fn handle_password_grant(
     .fetch_optional(&state.db)
     .await? else {
       password::burn_password_work(pw)?;
+      audit::log_event(
+        &state.db,
+        state.instance_id,
+        Some(client_ip),
+        "password_login_failed",
+        serde_json::json!({
+          "email": email,
+          "reason": "user_not_found",
+        }),
+      )
+      .await?;
       rate_limit::record_failure(&state.db, &rate_limit_key, PASSWORD_GRANT_RATE_LIMIT_WINDOW_SECS as i64)
         .await?;
       rate_limit::record_failure(&state.db, &ip_rate_limit_key, PASSWORD_GRANT_RATE_LIMIT_WINDOW_SECS as i64)
@@ -112,6 +128,18 @@ async fn handle_password_grant(
 
   if user.deleted_at.is_some() {
     password::burn_password_work(pw)?;
+    audit::log_event(
+      &state.db,
+      state.instance_id,
+      Some(client_ip),
+      "password_login_failed",
+      serde_json::json!({
+        "user_id": user.id,
+        "email": user.email,
+        "reason": "user_deleted",
+      }),
+    )
+    .await?;
     rate_limit::record_failure(
       &state.db,
       &rate_limit_key,
@@ -129,6 +157,18 @@ async fn handle_password_grant(
 
   if user.banned_until.map(|value| value > Utc::now()).unwrap_or(false) {
     password::burn_password_work(pw)?;
+    audit::log_event(
+      &state.db,
+      state.instance_id,
+      Some(client_ip),
+      "password_login_failed",
+      serde_json::json!({
+        "user_id": user.id,
+        "email": user.email,
+        "reason": "user_banned",
+      }),
+    )
+    .await?;
     rate_limit::record_failure(
       &state.db,
       &rate_limit_key,
@@ -146,11 +186,35 @@ async fn handle_password_grant(
 
   if !state.mailer_autoconfirm && user.email.is_some() && user.email_confirmed_at.is_none() {
     password::burn_password_work(pw)?;
+    audit::log_event(
+      &state.db,
+      state.instance_id,
+      Some(client_ip),
+      "password_login_failed",
+      serde_json::json!({
+        "user_id": user.id,
+        "email": user.email,
+        "reason": "email_not_confirmed",
+      }),
+    )
+    .await?;
     return Err(AuthError::InvalidCredentials);
   }
 
   let Some(hash) = user.encrypted_password.as_deref() else {
     password::burn_password_work(pw)?;
+    audit::log_event(
+      &state.db,
+      state.instance_id,
+      Some(client_ip),
+      "password_login_failed",
+      serde_json::json!({
+        "user_id": user.id,
+        "email": user.email,
+        "reason": "password_not_available",
+      }),
+    )
+    .await?;
     rate_limit::record_failure(
       &state.db,
       &rate_limit_key,
@@ -166,8 +230,19 @@ async fn handle_password_grant(
     return Err(AuthError::InvalidCredentials);
   };
 
-  validate_password_policy(pw)?;
   if !password::verify_password(pw, hash)? {
+    audit::log_event(
+      &state.db,
+      state.instance_id,
+      Some(client_ip),
+      "password_login_failed",
+      serde_json::json!({
+        "user_id": user.id,
+        "email": user.email,
+        "reason": "invalid_password",
+      }),
+    )
+    .await?;
     rate_limit::record_failure(
       &state.db,
       &rate_limit_key,
@@ -189,15 +264,51 @@ async fn handle_password_grant(
   let factors = mfa::verified_factors_by_user_id(&state.db, user.id).await?;
   if !factors.is_empty() {
     let pending = mfa::create_pending_login(&state, user.id, "password").await?;
+    audit::log_event(
+      &state.db,
+      state.instance_id,
+      Some(client_ip),
+      "password_login_challenged",
+      serde_json::json!({
+        "user_id": user.id,
+        "email": user.email,
+        "mfa_required": true,
+      }),
+    )
+    .await?;
     return Ok(TokenGrantResponse::PendingMfa(pending));
   }
 
-  session::issue_session(&state, &user, "password")
-    .await
-    .map(|response| TokenGrantResponse::Token(Box::new(response)))
+  let response = session::issue_session_for_client(
+    &state,
+    &user,
+    "password",
+    session::ClientContext {
+      user_agent,
+      ip: Some(client_ip),
+    },
+  )
+  .await?;
+  audit::log_event(
+    &state.db,
+    state.instance_id,
+    Some(client_ip),
+    "password_login_succeeded",
+    serde_json::json!({
+      "user_id": user.id,
+      "email": user.email,
+    }),
+  )
+  .await?;
+  Ok(TokenGrantResponse::Token(Box::new(response)))
 }
 
-async fn handle_refresh_grant(state: AppState, body: serde_json::Value) -> Result<TokenResponse> {
+async fn handle_refresh_grant(
+  state: AppState,
+  client_ip: IpAddr,
+  user_agent: Option<String>,
+  body: serde_json::Value,
+) -> Result<TokenResponse> {
   let rt_str = body
     .get("refresh_token")
     .and_then(|v| v.as_str())
@@ -255,6 +366,19 @@ async fn handle_refresh_grant(state: AppState, body: serde_json::Value) -> Resul
   }
   if session_row.not_after.map(|value| value <= now).unwrap_or(false) {
     return Err(AuthError::SessionNotFound);
+  }
+  let ip_matches = session_row
+    .ip
+    .as_deref()
+    .is_none_or(|value| value == client_ip.to_string());
+  let user_agent_matches = session_row
+    .user_agent
+    .as_deref()
+    .is_none_or(|value| user_agent.as_deref() == Some(value));
+  if !ip_matches || !user_agent_matches {
+    revoke_refresh_token_family(&mut tx, session_id, now).await?;
+    tx.commit().await?;
+    return Err(AuthError::InvalidToken);
   }
 
   let user: User = sqlx::query_as::<_, User>(
@@ -331,7 +455,15 @@ async fn handle_mfa_totp_grant(
     .and_then(|v| v.as_str())
     .ok_or_else(|| AuthError::ValidationFailed("code is required".to_string()))?;
 
-  mfa::verify_pending_totp(&state, client_ip, mfa_token, factor_id, code).await
+  mfa::verify_pending_totp(
+    &state,
+    client_ip,
+    user_agent_from_headers(&headers),
+    mfa_token,
+    factor_id,
+    code,
+  )
+  .await
 }
 
 fn password_grant_rate_limit_key(email: &str, client_ip: IpAddr) -> String {
@@ -344,6 +476,13 @@ fn password_grant_rate_limit_key(email: &str, client_ip: IpAddr) -> String {
 
 fn password_grant_ip_rate_limit_key(client_ip: IpAddr) -> String {
   format!("password-ip:{client_ip}")
+}
+
+fn user_agent_from_headers(headers: &HeaderMap) -> Option<String> {
+  headers
+    .get(axum::http::header::USER_AGENT)
+    .and_then(|value| value.to_str().ok())
+    .map(str::to_owned)
 }
 
 async fn revoke_refresh_token_family(

@@ -19,6 +19,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::auth::{
+  audit,
   mfa,
   session,
 };
@@ -45,6 +46,7 @@ const MFA_PENDING_TTL_MINUTES: i64 = 5;
 const MFA_MAX_VERIFY_ATTEMPTS: i32 = 10;
 const MFA_ENROLL_MAX_VERIFY_ATTEMPTS: i32 = 10;
 const MFA_ENROLL_VERIFY_WINDOW_MINUTES: i64 = 5;
+const MFA_MAX_UNVERIFIED_FACTORS_PER_USER: i64 = 10;
 
 #[derive(Debug, Deserialize)]
 pub struct CreateTotpFactorRequest {
@@ -108,6 +110,7 @@ pub async fn create_totp_factor(
   let friendly_name = normalize_friendly_name(req.friendly_name)?;
 
   ensure_friendly_name_available(&state.db, user_id, friendly_name.as_deref()).await?;
+  ensure_unverified_factor_limit_not_reached(&state.db, user_id).await?;
 
   let raw_secret = mfa::generate_totp_secret();
   let secret = mfa::encode_secret(&raw_secret);
@@ -130,6 +133,19 @@ pub async fn create_totp_factor(
   .execute(&state.db)
   .await?;
 
+  audit::log_event(
+    &state.db,
+    state.instance_id,
+    Some(client_addr.ip()),
+    "mfa_enrollment_created",
+    serde_json::json!({
+      "user_id": user_id,
+      "factor_id": factor_id,
+      "factor_type": "totp",
+    }),
+  )
+  .await?;
+
   Ok(Json(MfaEnrollResponse {
     id: factor_id,
     friendly_name,
@@ -141,6 +157,7 @@ pub async fn create_totp_factor(
 
 pub async fn verify_totp_factor(
   State(state): State<AppState>,
+  ConnectInfo(client_addr): ConnectInfo<SocketAddr>,
   AuthUser { user, .. }: AuthUser,
   Path(factor_id): Path<Uuid>,
   Json(req): Json<VerifyTotpCodeRequest>,
@@ -180,6 +197,19 @@ pub async fn verify_totp_factor(
   .fetch_one(tx.as_mut())
   .await?;
   tx.commit().await?;
+
+  audit::log_event(
+    &state.db,
+    state.instance_id,
+    Some(client_addr.ip()),
+    "mfa_enrollment_verified",
+    serde_json::json!({
+      "user_id": user_id,
+      "factor_id": factor_id,
+      "factor_type": "totp",
+    }),
+  )
+  .await?;
 
   Ok(Json(verified.into()))
 }
@@ -281,6 +311,7 @@ pub async fn create_pending_login(
 pub async fn verify_pending_totp(
   state: &AppState,
   client_ip: IpAddr,
+  user_agent: Option<String>,
   mfa_token: &str,
   factor_id: Uuid,
   code: &str,
@@ -336,12 +367,16 @@ pub async fn verify_pending_totp(
     .await?;
 
   let user = fetch_user(&state.db, user_id).await?;
-  let response = session::issue_session_with_context(
+  let response = session::issue_session_with_client_context(
     state,
     &user,
     "aal2",
     Some(factor_id),
     vec![flow.authentication_method, "totp".to_string()],
+    session::ClientContext {
+      user_agent,
+      ip: Some(client_ip),
+    },
   )
   .await?;
 
@@ -373,6 +408,23 @@ async fn factors_by_user_id(db: &PgPool, user_id: Uuid) -> Result<Vec<MfaFactorR
   .await?;
 
   Ok(factors)
+}
+
+async fn ensure_unverified_factor_limit_not_reached(db: &PgPool, user_id: Uuid) -> Result<()> {
+  let (count,): (i64,) = sqlx::query_as(
+    "SELECT COUNT(*) FROM auth.mfa_factors WHERE user_id = $1 AND factor_type = 'totp'::auth.factor_type AND status = 'unverified'::auth.factor_status",
+  )
+  .bind(user_id)
+  .fetch_one(db)
+  .await?;
+
+  if count >= MFA_MAX_UNVERIFIED_FACTORS_PER_USER {
+    return Err(AuthError::ValidationFailed(format!(
+      "Too many unverified TOTP factors. Remove an existing unverified factor before creating another (limit: {MFA_MAX_UNVERIFIED_FACTORS_PER_USER})."
+    )));
+  }
+
+  Ok(())
 }
 
 async fn factor_by_id(db: &PgPool, factor_id: Uuid, user_id: Uuid) -> Result<MfaFactorRow> {

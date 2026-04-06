@@ -1,3 +1,4 @@
+pub mod audit;
 pub mod jwt;
 pub mod mfa;
 pub mod oidc;

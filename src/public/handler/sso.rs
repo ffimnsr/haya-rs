@@ -1,4 +1,5 @@
 use axum::extract::{
+  ConnectInfo,
   Form,
   Query,
   State,
@@ -20,12 +21,19 @@ use chrono::{
   Duration,
   Utc,
 };
+use hmac::Mac;
 use serde::Deserialize;
+use std::net::{
+  IpAddr,
+  SocketAddr,
+};
 use uuid::Uuid;
 
 use crate::auth::{
+  audit,
   mfa as crypto_mfa,
   oidc,
+  rate_limit,
   session,
 };
 use crate::defaults::AUTHORIZATION_CODE_LIFETIME;
@@ -42,6 +50,8 @@ use crate::state::AppState;
 
 const OIDC_RESULT_TTL_MINUTES: i64 = 1;
 const OIDC_STATE_COOKIE_NAME: &str = "haya_oidc_state";
+const OIDC_CALLBACK_RATE_LIMIT_ATTEMPTS: u32 = 15;
+const OIDC_CALLBACK_RATE_LIMIT_WINDOW_SECS: i64 = 300;
 
 #[derive(Debug, Deserialize)]
 pub struct AuthorizeQuery {
@@ -110,7 +120,13 @@ pub async fn authorize(
   .bind(flow_id)
   .bind(&flow.state)
   .bind(if provider.pkce { "s256" } else { "plain" })
-  .bind(flow.pkce_verifier.clone().unwrap_or_default())
+  .bind(
+    flow
+      .pkce_verifier
+      .as_deref()
+      .map(oidc::pkce_challenge)
+      .unwrap_or_default(),
+  )
   .bind(&provider.name)
   .bind("oidc")
   .bind(now)
@@ -133,27 +149,33 @@ pub async fn authorize(
 
 pub async fn callback(
   State(state): State<AppState>,
+  ConnectInfo(client_addr): ConnectInfo<SocketAddr>,
   headers: HeaderMap,
   Query(query): Query<CallbackQuery>,
 ) -> Result<Response> {
-  handle_callback(state, headers, query.code, query.state).await
+  handle_callback(state, Some(client_addr.ip()), headers, query.code, query.state).await
 }
 
 pub async fn callback_form(
   State(state): State<AppState>,
+  ConnectInfo(client_addr): ConnectInfo<SocketAddr>,
   headers: HeaderMap,
   Form(form): Form<CallbackForm>,
 ) -> Result<Response> {
-  handle_callback(state, headers, form.code, form.state).await
+  handle_callback(state, Some(client_addr.ip()), headers, form.code, form.state).await
 }
 
 async fn handle_callback(
   state: AppState,
+  client_ip: Option<IpAddr>,
   headers: HeaderMap,
   code: String,
   state_param: String,
 ) -> Result<Response> {
-  if oidc_state_cookie(&headers) != Some(state_param.as_str()) {
+  let Some(cookie_state) = oidc_state_cookie(&headers) else {
+    return Err(AuthError::InvalidToken);
+  };
+  if !constant_time_eq(cookie_state, &state_param) {
     return Err(AuthError::InvalidToken);
   }
 
@@ -210,6 +232,18 @@ async fn handle_callback(
   if !factors.is_empty() {
     let pending = mfa::create_pending_login(&state, user.id, "oidc").await?;
     let exchange_code = persist_oidc_result(&state, TokenGrantResponse::PendingMfa(pending)).await?;
+    audit::log_event(
+      &state.db,
+      state.instance_id,
+      client_ip,
+      "oidc_login_challenged",
+      serde_json::json!({
+        "user_id": user.id,
+        "provider": flow.provider_type,
+        "mfa_required": true,
+      }),
+    )
+    .await?;
 
     let mut response = Redirect::to(&build_redirect_url(
       validated_redirect_to(&state, flow.redirect_to.as_deref())?,
@@ -222,8 +256,28 @@ async fn handle_callback(
     return Ok(response);
   }
 
-  let response = session::issue_session(&state, &user, "oidc").await?;
+  let response = session::issue_session_for_client(
+    &state,
+    &user,
+    "oidc",
+    session::ClientContext {
+      user_agent: user_agent_from_headers(&headers),
+      ip: client_ip,
+    },
+  )
+  .await?;
   let exchange_code = persist_oidc_result(&state, TokenGrantResponse::Token(Box::new(response))).await?;
+  audit::log_event(
+    &state.db,
+    state.instance_id,
+    client_ip,
+    "oidc_login_succeeded",
+    serde_json::json!({
+      "user_id": user.id,
+      "provider": flow.provider_type,
+    }),
+  )
+  .await?;
 
   let mut response = Redirect::to(&build_redirect_url(
     validated_redirect_to(&state, flow.redirect_to.as_deref())?,
@@ -403,6 +457,13 @@ fn oidc_state_cookie(headers: &HeaderMap) -> Option<&str> {
     })
 }
 
+fn user_agent_from_headers(headers: &HeaderMap) -> Option<String> {
+  headers
+    .get(axum::http::header::USER_AGENT)
+    .and_then(|value| value.to_str().ok())
+    .map(str::to_owned)
+}
+
 fn build_oidc_state_cookie(state: &AppState, value: &str, max_age_seconds: i64) -> Result<HeaderValue> {
   validate_oidc_cookie_value(value)?;
   let secure = state.site_url.starts_with("https://");
@@ -432,6 +493,18 @@ fn validate_oidc_cookie_value(value: &str) -> Result<()> {
   Ok(())
 }
 
+fn constant_time_eq(left: &str, right: &str) -> bool {
+  let mut left_mac =
+    hmac::Hmac::<sha2::Sha256>::new_from_slice(b"haya-oidc-state-compare").expect("static key is valid");
+  left_mac.update(left.as_bytes());
+  let left_tag = left_mac.finalize().into_bytes();
+
+  let mut right_mac =
+    hmac::Hmac::<sha2::Sha256>::new_from_slice(b"haya-oidc-state-compare").expect("static key is valid");
+  right_mac.update(right.as_bytes());
+  right_mac.verify_slice(&left_tag).is_ok()
+}
+
 async fn fetch_user(db: &sqlx::PgPool, user_id: Uuid) -> Result<User> {
   sqlx::query_as::<_, User>(
     "SELECT id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_sso_user, is_anonymous, banned_until, deleted_at, created_at, updated_at FROM auth.users WHERE id = $1",
@@ -446,21 +519,45 @@ fn ensure_user_signin_allowed(user: &User) -> Result<()> {
   session::ensure_user_is_active(user)
 }
 
-pub async fn exchange_callback_code(state: AppState, body: serde_json::Value) -> Result<TokenGrantResponse> {
+pub async fn exchange_callback_code(
+  state: AppState,
+  client_ip: IpAddr,
+  body: serde_json::Value,
+) -> Result<TokenGrantResponse> {
   let code = body
     .get("code")
     .and_then(|value| value.as_str())
     .ok_or_else(|| AuthError::ValidationFailed("code is required".to_string()))?;
+  let rate_limit_key = format!("oidc-callback-ip:{client_ip}");
 
-  let row: OidcResultRow = sqlx::query_as::<_, OidcResultRow>(
+  if rate_limit::is_limited(&state.db, &rate_limit_key, OIDC_CALLBACK_RATE_LIMIT_ATTEMPTS).await? {
+    return Err(AuthError::TooManyRequests);
+  }
+
+  let row = sqlx::query_as::<_, OidcResultRow>(
     "DELETE FROM auth.flow_state WHERE auth_code = $1 AND provider_type = 'oidc_result' RETURNING provider_access_token, expires_at",
   )
   .bind(code)
   .fetch_optional(&state.db)
-  .await?
-  .ok_or(AuthError::InvalidToken)?;
+  .await?;
+
+  let Some(row) = row else {
+    rate_limit::record_failure(&state.db, &rate_limit_key, OIDC_CALLBACK_RATE_LIMIT_WINDOW_SECS).await?;
+    audit::log_event(
+      &state.db,
+      state.instance_id,
+      Some(client_ip),
+      "oidc_callback_exchange_failed",
+      serde_json::json!({
+        "reason": "invalid_code",
+      }),
+    )
+    .await?;
+    return Err(AuthError::InvalidToken);
+  };
 
   if row.expires_at.map(|value| value < Utc::now()).unwrap_or(true) {
+    rate_limit::record_failure(&state.db, &rate_limit_key, OIDC_CALLBACK_RATE_LIMIT_WINDOW_SECS).await?;
     return Err(AuthError::TokenExpired);
   }
 
@@ -468,8 +565,10 @@ pub async fn exchange_callback_code(state: AppState, body: serde_json::Value) ->
     .provider_access_token
     .ok_or_else(|| AuthError::InternalError("OIDC callback result is missing".to_string()))?;
   let decrypted = crypto_mfa::decrypt_secret(&payload, &state.mfa_encryption_key)?;
-  serde_json::from_slice(&decrypted)
-    .map_err(|e| AuthError::InternalError(format!("invalid OIDC callback result payload: {e}")))
+  let response = serde_json::from_slice(&decrypted)
+    .map_err(|e| AuthError::InternalError(format!("invalid OIDC callback result payload: {e}")))?;
+  rate_limit::clear(&state.db, &rate_limit_key).await?;
+  Ok(response)
 }
 
 async fn persist_oidc_result(state: &AppState, response: TokenGrantResponse) -> Result<String> {
@@ -597,5 +696,15 @@ mod tests {
 
     assert!(redirect.contains("?code=one-time-code"));
     assert!(!redirect.contains('#'));
+  }
+
+  #[test]
+  fn constant_time_compare_accepts_equal_values() {
+    assert!(constant_time_eq("state-value", "state-value"));
+  }
+
+  #[test]
+  fn constant_time_compare_rejects_different_values() {
+    assert!(!constant_time_eq("state-value", "other-state"));
   }
 }

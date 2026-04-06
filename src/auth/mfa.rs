@@ -15,14 +15,13 @@ use hmac::{
 };
 use rand::RngCore;
 use sha1::Sha1;
-use sha2::{
-  Digest,
-  Sha256,
-};
+use sha2::Sha256;
 use url::Url;
 
 use crate::error::AuthError;
 
+const MFA_ENCRYPTION_KDF_SALT: &[u8] = b"haya-mfa-encryption-key-salt";
+const MFA_ENCRYPTION_KDF_INFO: &[u8] = b"haya-mfa-encryption-key/v1";
 const MFA_SECRET_BYTES: usize = 20;
 const TOTP_PERIOD_SECS: i64 = 30;
 const TOTP_DIGITS: u32 = 6;
@@ -30,9 +29,19 @@ const TOTP_SKEW_STEPS: i64 = 1;
 const ENCRYPTION_VERSION: &str = "v1";
 
 type HmacSha1 = Hmac<Sha1>;
+type HmacSha256 = Hmac<Sha256>;
 
 pub fn derive_encryption_key(material: &str) -> [u8; 32] {
-  let digest = Sha256::digest(material.as_bytes());
+  let mut extract = <HmacSha256 as Mac>::new_from_slice(MFA_ENCRYPTION_KDF_SALT)
+    .expect("static HKDF salt is a valid HMAC-SHA256 key");
+  extract.update(material.as_bytes());
+  let prk = extract.finalize().into_bytes();
+
+  let mut expand =
+    <HmacSha256 as Mac>::new_from_slice(&prk).expect("HKDF extract output is a valid HMAC-SHA256 key");
+  expand.update(MFA_ENCRYPTION_KDF_INFO);
+  expand.update(&[1]);
+  let digest = expand.finalize().into_bytes();
   let mut key = [0u8; 32];
   key.copy_from_slice(&digest);
   key

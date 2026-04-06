@@ -34,8 +34,39 @@ const REAUTHENTICATION_TTL_MINUTES: i64 = 10;
 const REAUTHENTICATION_RATE_LIMIT_WINDOW_SECS: u64 = 900;
 const REAUTHENTICATION_RATE_LIMIT_ATTEMPTS: u32 = 10;
 
+#[derive(Debug, Clone, Default)]
+pub struct ClientContext {
+  pub user_agent: Option<String>,
+  pub ip: Option<IpAddr>,
+}
+
 pub async fn issue_session(state: &AppState, user: &User, method: &str) -> Result<TokenResponse> {
-  issue_session_with_context(state, user, "aal1", None, vec![method.to_string()]).await
+  issue_session_with_client_context(
+    state,
+    user,
+    "aal1",
+    None,
+    vec![method.to_string()],
+    ClientContext::default(),
+  )
+  .await
+}
+
+pub async fn issue_session_for_client(
+  state: &AppState,
+  user: &User,
+  method: &str,
+  client_context: ClientContext,
+) -> Result<TokenResponse> {
+  issue_session_with_client_context(
+    state,
+    user,
+    "aal1",
+    None,
+    vec![method.to_string()],
+    client_context,
+  )
+  .await
 }
 
 pub async fn issue_session_with_context(
@@ -45,17 +76,30 @@ pub async fn issue_session_with_context(
   factor_id: Option<Uuid>,
   methods: Vec<String>,
 ) -> Result<TokenResponse> {
+  issue_session_with_client_context(state, user, aal, factor_id, methods, ClientContext::default()).await
+}
+
+pub async fn issue_session_with_client_context(
+  state: &AppState,
+  user: &User,
+  aal: &str,
+  factor_id: Option<Uuid>,
+  methods: Vec<String>,
+  client_context: ClientContext,
+) -> Result<TokenResponse> {
   let now = Utc::now();
   let session_id = Uuid::new_v4();
   let mut tx = state.db.begin().await?;
 
   sqlx::query(
-    "INSERT INTO auth.sessions (id, user_id, factor_id, aal, refreshed_at, created_at, updated_at) VALUES ($1, $2, $3, $4::auth.aal_level, $5, $6, $7)",
+    "INSERT INTO auth.sessions (id, user_id, factor_id, aal, user_agent, ip, refreshed_at, created_at, updated_at) VALUES ($1, $2, $3, $4::auth.aal_level, $5, $6::inet, $7, $8, $9)",
   )
   .bind(session_id)
   .bind(user.id)
   .bind(factor_id)
   .bind(aal)
+  .bind(client_context.user_agent)
+  .bind(client_context.ip.map(|value| value.to_string()))
   .bind(now.naive_utc())
   .bind(now)
   .bind(now)
@@ -160,7 +204,7 @@ pub async fn load_session_context(
   session_id: Uuid,
 ) -> Result<(SessionRow, Vec<jwt::AmrEntry>)> {
   let session: SessionRow = sqlx::query_as::<_, SessionRow>(
-    "SELECT id, user_id, factor_id, aal::text as aal, not_after, refreshed_at, created_at, updated_at FROM auth.sessions WHERE id = $1",
+    "SELECT id, user_id, factor_id, aal::text as aal, not_after, user_agent, host(ip) as ip, refreshed_at, created_at, updated_at FROM auth.sessions WHERE id = $1",
   )
   .bind(session_id)
   .fetch_one(&state.db)
@@ -191,7 +235,7 @@ pub async fn ensure_active_session(state: &AppState, claims: &jwt::Claims) -> Re
     .map_err(|_| AuthError::NotAuthorized)?;
   let user_id = claims.sub.parse::<Uuid>().map_err(|_| AuthError::NotAuthorized)?;
   let session: SessionRow = sqlx::query_as::<_, SessionRow>(
-    "SELECT id, user_id, factor_id, aal::text as aal, not_after, refreshed_at, created_at, updated_at FROM auth.sessions WHERE id = $1",
+    "SELECT id, user_id, factor_id, aal::text as aal, not_after, user_agent, host(ip) as ip, refreshed_at, created_at, updated_at FROM auth.sessions WHERE id = $1",
   )
   .bind(session_id)
   .fetch_optional(&state.db)
@@ -449,6 +493,8 @@ mod tests {
       factor_id: None,
       aal: Some("aal1".to_string()),
       not_after: None,
+      user_agent: None,
+      ip: None,
       refreshed_at: Some(last_active_at.naive_utc()),
       created_at: Some(last_active_at),
       updated_at: Some(last_active_at),

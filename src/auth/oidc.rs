@@ -523,7 +523,7 @@ pub fn provider_names(providers: &HashMap<String, OidcProviderConfig>) -> Vec<St
   names
 }
 
-fn pkce_challenge(verifier: &str) -> String {
+pub(crate) fn pkce_challenge(verifier: &str) -> String {
   let digest = Sha256::digest(verifier.as_bytes());
   URL_SAFE_NO_PAD.encode(digest)
 }

@@ -1,5 +1,6 @@
 use axum::Json;
 use axum::extract::{
+  ConnectInfo,
   Path,
   Query,
   State,
@@ -8,9 +9,13 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use chrono::Utc;
 use serde::Deserialize;
+use std::net::SocketAddr;
 use uuid::Uuid;
 
-use crate::auth::password;
+use crate::auth::{
+  audit,
+  password,
+};
 use crate::error::{
   AuthError,
   Result,
@@ -107,6 +112,7 @@ pub struct AdminCreateUserRequest {
 
 pub async fn admin_create_user(
   State(state): State<AppState>,
+  ConnectInfo(client_addr): ConnectInfo<SocketAddr>,
   AdminUser(_claims): AdminUser,
   Json(req): Json<AdminCreateUserRequest>,
 ) -> Result<Json<UserResponse>> {
@@ -178,6 +184,18 @@ pub async fn admin_create_user(
     .bind(now)
     .fetch_one(&mut *tx)
     .await?;
+  audit::log_event_tx(
+    tx.as_mut(),
+    state.instance_id,
+    Some(client_addr.ip()),
+    "admin_user_created",
+    serde_json::json!({
+      "target_user_id": user.id,
+      "email": user.email,
+      "role": user.role,
+    }),
+  )
+  .await?;
   tx.commit().await?;
 
   Ok(Json(UserResponse::from_user(&state.db, user).await?))
@@ -213,12 +231,14 @@ pub struct AdminUpdateUserRequest {
 
 pub async fn admin_update_user(
   State(state): State<AppState>,
+  ConnectInfo(client_addr): ConnectInfo<SocketAddr>,
   AdminUser(_claims): AdminUser,
   Path(user_id): Path<Uuid>,
   Json(req): Json<AdminUpdateUserRequest>,
 ) -> Result<Json<UserResponse>> {
   let now = Utc::now();
   let mut tx = state.db.begin().await?;
+  let mut password_changed = false;
 
   if let Some(ref pw) = req.password {
     validate_password_policy(pw)?;
@@ -229,6 +249,16 @@ pub async fn admin_update_user(
       .bind(user_id)
       .execute(&mut *tx)
       .await?;
+    sqlx::query("UPDATE auth.refresh_tokens SET revoked = true, updated_at = $1 WHERE user_id = $2")
+      .bind(now)
+      .bind(user_id.to_string())
+      .execute(&mut *tx)
+      .await?;
+    sqlx::query("DELETE FROM auth.sessions WHERE user_id = $1")
+      .bind(user_id)
+      .execute(&mut *tx)
+      .await?;
+    password_changed = true;
   }
 
   if let Some(ref role) = req.role {
@@ -270,7 +300,7 @@ pub async fn admin_update_user(
         "Phone must be a valid E.164 number".to_string(),
       ));
     }
-    sqlx::query("UPDATE auth.users SET phone = $1, updated_at = $2 WHERE id = $3")
+    sqlx::query("UPDATE auth.users SET phone = $1, phone_confirmed_at = NULL, updated_at = $2 WHERE id = $3")
       .bind(phone)
       .bind(now)
       .bind(user_id)
@@ -325,6 +355,27 @@ pub async fn admin_update_user(
     }
   }
 
+  audit::log_event_tx(
+    tx.as_mut(),
+    state.instance_id,
+    Some(client_addr.ip()),
+    "admin_user_updated",
+    serde_json::json!({
+      "target_user_id": user_id,
+      "password_changed": password_changed,
+      "fields": {
+        "email": req.email.is_some(),
+        "phone": req.phone.is_some(),
+        "role": req.role.is_some(),
+        "user_metadata": req.user_metadata.is_some(),
+        "app_metadata": req.app_metadata.is_some(),
+        "email_confirm": req.email_confirm == Some(true),
+        "ban_duration": req.ban_duration.is_some(),
+      }
+    }),
+  )
+  .await?;
+
   tx.commit().await?;
 
   let user: User = sqlx::query_as::<_, User>(
@@ -340,17 +391,32 @@ pub async fn admin_update_user(
 
 pub async fn admin_delete_user(
   State(state): State<AppState>,
+  ConnectInfo(client_addr): ConnectInfo<SocketAddr>,
   AdminUser(_claims): AdminUser,
   Path(user_id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
+  let mut tx = state.db.begin().await?;
   let result = sqlx::query("DELETE FROM auth.users WHERE id = $1")
     .bind(user_id)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
 
   if result.rows_affected() == 0 {
+    tx.rollback().await?;
     return Err(AuthError::UserNotFound);
   }
+
+  audit::log_event_tx(
+    tx.as_mut(),
+    state.instance_id,
+    Some(client_addr.ip()),
+    "admin_user_deleted",
+    serde_json::json!({
+      "target_user_id": user_id,
+    }),
+  )
+  .await?;
+  tx.commit().await?;
 
   Ok(StatusCode::NO_CONTENT)
 }
@@ -380,14 +446,19 @@ pub(crate) fn parse_ban_duration(duration: &str) -> Result<i64, AuthError> {
 }
 
 pub(crate) fn validate_password_policy(password: &str) -> Result<(), AuthError> {
-  if password.len() < 8 {
+  if password.len() < 12 {
     return Err(AuthError::ValidationFailed(
-      "Password must be at least 8 characters.".to_string(),
+      "Password must be at least 12 characters.".to_string(),
     ));
   }
   if password.len() > 128 {
     return Err(AuthError::ValidationFailed(
       "Password must not exceed 128 characters.".to_string(),
+    ));
+  }
+  if password.chars().all(char::is_alphabetic) {
+    return Err(AuthError::ValidationFailed(
+      "Password must include at least one non-letter character.".to_string(),
     ));
   }
   Ok(())
@@ -446,5 +517,17 @@ mod tests {
     assert!(parse_ban_duration("invalid").is_err());
     assert!(parse_ban_duration("").is_err());
     assert!(parse_ban_duration("abch").is_err());
+  }
+
+  #[test]
+  fn test_password_policy_requires_minimum_length() {
+    assert!(validate_password_policy("short123").is_err());
+    assert!(validate_password_policy("long-enough1").is_ok());
+  }
+
+  #[test]
+  fn test_password_policy_requires_non_letter_character() {
+    assert!(validate_password_policy("LettersOnlyPw").is_err());
+    assert!(validate_password_policy("LettersOnly1").is_ok());
   }
 }

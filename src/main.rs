@@ -150,6 +150,9 @@ fn build_runtime_bootstrap(require_database: bool) -> anyhow::Result<RuntimeBoot
     .build()?;
 
   let dev_mode = env_flag_enabled("HAYA_DEV_MODE");
+  if require_database && dev_mode {
+    anyhow::bail!("HAYA_DEV_MODE must not be enabled when running with a required database");
+  }
   let jwt_secret = match env::var("JWT_SECRET") {
     Ok(secret) if secret.len() >= 32 => secret,
     Ok(secret) if secret.is_empty() && require_database => {

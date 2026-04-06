@@ -26,9 +26,15 @@ use crate::public::handler::signup::is_valid_email;
 use crate::state::AppState;
 use crate::utils::sha256_hex;
 
-pub(crate) const EMAIL_TOKEN_COOLDOWN_SECONDS: i64 = 60;
+pub(crate) const EMAIL_TOKEN_COOLDOWN_SECONDS: i64 = 300;
 const RECOVER_RATE_LIMIT_WINDOW_SECS: i64 = 900;
 const RECOVER_RATE_LIMIT_ATTEMPTS: u32 = 5;
+
+type RecoveryLookup = (
+  uuid::Uuid,
+  Option<chrono::DateTime<Utc>>,
+  Option<chrono::DateTime<Utc>>,
+);
 
 #[derive(Debug, Deserialize)]
 pub struct RecoverRequest {
@@ -51,18 +57,20 @@ pub async fn recover(
     return Ok(Json(serde_json::json!({})));
   }
 
-  let user_exists: Option<(uuid::Uuid, Option<chrono::DateTime<Utc>>)> =
-    sqlx::query_as::<_, (uuid::Uuid, Option<chrono::DateTime<Utc>>)>(
-      "SELECT id, recovery_sent_at FROM auth.users WHERE email = $1",
-    )
-    .bind(&req.email)
-    .fetch_optional(&state.db)
-    .await?;
+  let user_exists: Option<RecoveryLookup> = sqlx::query_as::<_, RecoveryLookup>(
+    "SELECT id, recovery_sent_at, email_confirmed_at FROM auth.users WHERE email = $1",
+  )
+  .bind(&req.email)
+  .fetch_optional(&state.db)
+  .await?;
 
-  let Some((user_id, recovery_sent_at)) = user_exists else {
+  let Some((user_id, recovery_sent_at, email_confirmed_at)) = user_exists else {
     // Return 200 regardless to prevent email enumeration
     return Ok(Json(serde_json::json!({})));
   };
+  if email_confirmed_at.is_none() {
+    return Ok(Json(serde_json::json!({})));
+  }
   let now = Utc::now();
   if email_token_cooldown_active(recovery_sent_at, now) {
     tracing::info!("Recovery token regeneration suppressed by cooldown");
