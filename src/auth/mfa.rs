@@ -102,10 +102,6 @@ pub fn build_otpauth_url(issuer: &str, account_name: &str, secret_b32: &str) -> 
   Ok(url.to_string())
 }
 
-pub fn verify_code(secret: &[u8], code: &str, now: i64) -> Result<bool, AuthError> {
-  Ok(matching_code_step(secret, code, now)?.is_some())
-}
-
 pub fn matching_code_step(secret: &[u8], code: &str, now: i64) -> Result<Option<i64>, AuthError> {
   let normalized = normalize_code(code)?;
   let counter = now.div_euclid(TOTP_PERIOD_SECS);
@@ -167,7 +163,7 @@ mod tests {
   #[test]
   fn rfc_totp_vector_is_accepted() {
     let secret = b"12345678901234567890";
-    assert!(verify_code(secret, "287082", 59).unwrap());
+    assert!(matching_code_step(secret, "287082", 59).unwrap().is_some());
     assert_eq!(matching_code_step(secret, "287082", 59).unwrap(), Some(1));
   }
 

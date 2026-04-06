@@ -1,12 +1,18 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use chrono::Utc;
+use chrono::{
+  DateTime,
+  Duration,
+  Utc,
+};
 use rand::RngCore;
+use std::net::IpAddr;
 use uuid::Uuid;
 
 use crate::auth::{
   jwt,
   password,
+  rate_limit,
 };
 use crate::error::{
   AuthError,
@@ -24,6 +30,8 @@ use crate::model::{
 use crate::state::AppState;
 
 const REAUTHENTICATION_TTL_MINUTES: i64 = 10;
+const REAUTHENTICATION_RATE_LIMIT_WINDOW_SECS: u64 = 900;
+const REAUTHENTICATION_RATE_LIMIT_ATTEMPTS: u32 = 10;
 
 pub async fn issue_session(state: &AppState, user: &User, method: &str) -> Result<TokenResponse> {
   issue_session_with_context(state, user, "aal1", None, vec![method.to_string()]).await
@@ -41,12 +49,13 @@ pub async fn issue_session_with_context(
   let mut tx = state.db.begin().await?;
 
   sqlx::query(
-    "INSERT INTO auth.sessions (id, user_id, factor_id, aal, created_at, updated_at) VALUES ($1, $2, $3, $4::auth.aal_level, $5, $6)",
+    "INSERT INTO auth.sessions (id, user_id, factor_id, aal, refreshed_at, created_at, updated_at) VALUES ($1, $2, $3, $4::auth.aal_level, $5, $6, $7)",
   )
   .bind(session_id)
   .bind(user.id)
   .bind(factor_id)
   .bind(aal)
+  .bind(now.naive_utc())
   .bind(now)
   .bind(now)
   .execute(&mut *tx)
@@ -149,11 +158,12 @@ pub async fn load_session_context(
   session_id: Uuid,
 ) -> Result<(SessionRow, Vec<jwt::AmrEntry>)> {
   let session: SessionRow = sqlx::query_as::<_, SessionRow>(
-    "SELECT id, user_id, factor_id, aal::text as aal, not_after, created_at, updated_at FROM auth.sessions WHERE id = $1",
+    "SELECT id, user_id, factor_id, aal::text as aal, not_after, refreshed_at, created_at, updated_at FROM auth.sessions WHERE id = $1",
   )
   .bind(session_id)
   .fetch_one(&state.db)
   .await?;
+  ensure_session_is_active(state, &session)?;
   let claims: Vec<SessionAmrClaimRow> = sqlx::query_as::<_, SessionAmrClaimRow>(
     "SELECT authentication_method, created_at FROM auth.mfa_amr_claims WHERE session_id = $1 ORDER BY created_at ASC",
   )
@@ -179,7 +189,7 @@ pub async fn ensure_active_session(state: &AppState, claims: &jwt::Claims) -> Re
     .map_err(|_| AuthError::NotAuthorized)?;
   let user_id = claims.sub.parse::<Uuid>().map_err(|_| AuthError::NotAuthorized)?;
   let session: SessionRow = sqlx::query_as::<_, SessionRow>(
-    "SELECT id, user_id, factor_id, aal::text as aal, not_after, created_at, updated_at FROM auth.sessions WHERE id = $1",
+    "SELECT id, user_id, factor_id, aal::text as aal, not_after, refreshed_at, created_at, updated_at FROM auth.sessions WHERE id = $1",
   )
   .bind(session_id)
   .fetch_optional(&state.db)
@@ -190,13 +200,7 @@ pub async fn ensure_active_session(state: &AppState, claims: &jwt::Claims) -> Re
     return Err(AuthError::NotAuthorized);
   }
 
-  if session
-    .not_after
-    .map(|value| value <= Utc::now())
-    .unwrap_or(false)
-  {
-    return Err(AuthError::NotAuthorized);
-  }
+  ensure_session_is_active(state, &session)?;
 
   Ok(session)
 }
@@ -228,10 +232,29 @@ pub fn ensure_user_is_active(user: &User) -> Result<()> {
   Ok(())
 }
 
+fn ensure_session_is_active(state: &AppState, session: &SessionRow) -> Result<()> {
+  let now = Utc::now();
+  if session.not_after.map(|value| value <= now).unwrap_or(false) {
+    return Err(AuthError::NotAuthorized);
+  }
+
+  let last_active_at = session
+    .refreshed_at
+    .map(|value| DateTime::from_naive_utc_and_offset(value, Utc))
+    .or(session.created_at)
+    .ok_or(AuthError::NotAuthorized)?;
+  if last_active_at + Duration::seconds(state.session_idle_timeout_secs) <= now {
+    return Err(AuthError::NotAuthorized);
+  }
+
+  Ok(())
+}
+
 pub async fn require_reauthentication(
   state: &AppState,
   claims: &jwt::Claims,
   user: &User,
+  client_ip: IpAddr,
   current_password: Option<&str>,
   reauthentication_token: Option<&str>,
 ) -> Result<()> {
@@ -251,9 +274,20 @@ pub async fn require_reauthentication(
     .map(str::trim)
     .filter(|token| !token.is_empty())
   {
+    let limiter_key = reauthentication_rate_limit_key(user.id, client_ip);
+    if rate_limit::is_limited(&state.db, &limiter_key, REAUTHENTICATION_RATE_LIMIT_ATTEMPTS).await? {
+      return Err(AuthError::TooManyRequests);
+    }
     if consume_reauthentication_token(state, user.id, token, Utc::now()).await? {
+      rate_limit::clear(&state.db, &limiter_key).await?;
       return Ok(());
     }
+    rate_limit::record_failure(
+      &state.db,
+      &limiter_key,
+      REAUTHENTICATION_RATE_LIMIT_WINDOW_SECS as i64,
+    )
+    .await?;
     return Err(AuthError::InvalidToken);
   }
 
@@ -272,6 +306,10 @@ pub async fn require_reauthentication(
   }
 
   Ok(())
+}
+
+fn reauthentication_rate_limit_key(user_id: Uuid, client_ip: IpAddr) -> String {
+  format!("reauth:{user_id}:{client_ip}")
 }
 
 pub async fn send_reauthentication_token(state: &AppState, user: &User) -> Result<()> {
@@ -337,4 +375,69 @@ async fn consume_reauthentication_token(
   .await?;
 
   Ok(updated.rows_affected() == 1)
+}
+
+#[cfg(test)]
+mod tests {
+  use std::collections::HashMap;
+  use std::sync::Arc;
+
+  use sqlx::postgres::PgPoolOptions;
+  use tokio::sync::RwLock;
+
+  use super::*;
+
+  fn sample_state(session_idle_timeout_secs: i64) -> AppState {
+    AppState {
+      db: PgPoolOptions::new()
+        .connect_lazy("postgres://localhost:5432/haya")
+        .expect("lazy pool"),
+      http_client: reqwest::Client::new(),
+      jwt_secret: "a-very-long-test-secret-with-at-least-32-chars".to_string(),
+      mfa_encryption_key: [0; 32],
+      jwt_exp: 3600,
+      refresh_token_exp: 3600,
+      session_idle_timeout_secs,
+      site_url: "http://localhost:9999".to_string(),
+      allowed_redirect_origins: vec![],
+      site_name: "Haya".to_string(),
+      issuer: "http://localhost:9999".to_string(),
+      instance_id: Uuid::nil(),
+      oidc_providers: Arc::new(RwLock::new(HashMap::new())),
+      mailer_autoconfirm: false,
+      mailer: None,
+    }
+  }
+
+  fn sample_session(last_active_at: DateTime<Utc>) -> SessionRow {
+    SessionRow {
+      id: Uuid::nil(),
+      user_id: Uuid::nil(),
+      factor_id: None,
+      aal: Some("aal1".to_string()),
+      not_after: None,
+      refreshed_at: Some(last_active_at.naive_utc()),
+      created_at: Some(last_active_at),
+      updated_at: Some(last_active_at),
+    }
+  }
+
+  #[tokio::test]
+  async fn active_session_with_recent_activity_is_allowed() {
+    let state = sample_state(3600);
+    let session = sample_session(Utc::now() - Duration::minutes(30));
+
+    assert!(ensure_session_is_active(&state, &session).is_ok());
+  }
+
+  #[tokio::test]
+  async fn idle_session_is_rejected() {
+    let state = sample_state(300);
+    let session = sample_session(Utc::now() - Duration::minutes(10));
+
+    assert!(matches!(
+      ensure_session_is_active(&state, &session),
+      Err(AuthError::NotAuthorized)
+    ));
+  }
 }

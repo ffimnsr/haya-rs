@@ -6,9 +6,13 @@ use serde_json::{
 };
 
 use crate::error::Result;
+use crate::middleware::auth::AdminUser;
 use crate::state::AppState;
 
-pub async fn get_settings(State(state): State<AppState>) -> Result<Json<Value>> {
+pub async fn get_settings(
+  State(state): State<AppState>,
+  AdminUser(_claims): AdminUser,
+) -> Result<Json<Value>> {
   let mut external = Map::new();
   external.insert("email".to_string(), Value::Bool(true));
   let providers = state.oidc_providers.read().await;

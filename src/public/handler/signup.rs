@@ -13,19 +13,9 @@ use crate::error::{
   Result,
 };
 use crate::mailer::EmailKind;
-use crate::model::{
-  User,
-  UserResponse,
-};
+use crate::model::User;
 use crate::public::handler::admin::validate_password_policy;
 use crate::state::AppState;
-
-#[derive(Debug, serde::Serialize)]
-#[serde(untagged)]
-pub enum SignupResponse {
-  User(Box<UserResponse>),
-  Empty(serde_json::Value),
-}
 
 #[derive(Debug, Deserialize)]
 pub struct SignupRequest {
@@ -38,7 +28,7 @@ pub struct SignupRequest {
 pub async fn signup(
   State(state): State<AppState>,
   Json(req): Json<SignupRequest>,
-) -> Result<Json<SignupResponse>> {
+) -> Result<Json<serde_json::Value>> {
   if req.email.is_none() {
     return Err(AuthError::ValidationFailed("Email is required.".to_string()));
   }
@@ -68,7 +58,7 @@ pub async fn signup(
         .await?;
 
     if existing.is_some() {
-      return Ok(Json(SignupResponse::Empty(serde_json::json!({}))));
+      return Ok(Json(serde_json::json!({})));
     }
   }
 
@@ -112,7 +102,7 @@ pub async fn signup(
     .await {
     Ok(user) => user,
     Err(sqlx::Error::Database(err)) if err.is_unique_violation() => {
-      return Ok(Json(SignupResponse::Empty(serde_json::json!({}))));
+      return Ok(Json(serde_json::json!({})));
     },
     Err(err) => return Err(err.into()),
   };
@@ -141,9 +131,8 @@ pub async fn signup(
     }
   }
 
-  Ok(Json(SignupResponse::User(Box::new(
-    UserResponse::from_user(&state.db, user).await?,
-  ))))
+  let _ = user;
+  Ok(Json(serde_json::json!({})))
 }
 
 pub fn is_valid_email(email: &str) -> bool {

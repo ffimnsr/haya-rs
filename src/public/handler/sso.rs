@@ -2,9 +2,18 @@ use axum::extract::{
   Query,
   State,
 };
+use axum::http::header::{
+  COOKIE,
+  SET_COOKIE,
+};
+use axum::http::{
+  HeaderMap,
+  HeaderValue,
+};
 use axum::response::{
   IntoResponse,
   Redirect,
+  Response,
 };
 use chrono::{
   Duration,
@@ -31,6 +40,7 @@ use crate::public::handler::mfa;
 use crate::state::AppState;
 
 const OIDC_RESULT_TTL_MINUTES: i64 = 1;
+const OIDC_STATE_COOKIE_NAME: &str = "haya_oidc_state";
 
 #[derive(Debug, Deserialize)]
 pub struct AuthorizeQuery {
@@ -72,7 +82,7 @@ struct OidcResultRow {
 pub async fn authorize(
   State(state): State<AppState>,
   Query(query): Query<AuthorizeQuery>,
-) -> Result<impl IntoResponse> {
+) -> Result<Response> {
   let redirect_to = validated_redirect_to(&state, query.redirect_to.as_deref())?;
   let provider = state
     .oidc_providers
@@ -106,13 +116,23 @@ pub async fn authorize(
   .await?;
 
   let auth_url = oidc::build_authorization_url(&discovery, &provider, &flow)?;
-  Ok(Redirect::to(auth_url.as_str()))
+  let mut response = Redirect::to(auth_url.as_str()).into_response();
+  response.headers_mut().append(
+    SET_COOKIE,
+    build_oidc_state_cookie(&state, &flow.state, AUTHORIZATION_CODE_LIFETIME)?,
+  );
+  Ok(response)
 }
 
 pub async fn callback(
   State(state): State<AppState>,
+  headers: HeaderMap,
   Query(query): Query<CallbackQuery>,
-) -> Result<impl IntoResponse> {
+) -> Result<Response> {
+  if oidc_state_cookie(&headers) != Some(query.state.as_str()) {
+    return Err(AuthError::InvalidToken);
+  }
+
   let flow: FlowStateRow = sqlx::query_as::<_, FlowStateRow>(
     "DELETE FROM auth.flow_state WHERE auth_code = $1 RETURNING id, provider_type, auth_code, provider_access_token, provider_refresh_token, pkce_verifier, nonce, redirect_to, expires_at",
   )
@@ -167,19 +187,29 @@ pub async fn callback(
     let pending = mfa::create_pending_login(&state, user.id, "oidc").await?;
     let exchange_code = persist_oidc_result(&state, TokenGrantResponse::PendingMfa(pending)).await?;
 
-    return Ok(Redirect::to(&build_redirect_url(
+    let mut response = Redirect::to(&build_redirect_url(
       validated_redirect_to(&state, flow.redirect_to.as_deref())?,
       &exchange_code,
-    )?));
+    )?)
+    .into_response();
+    response
+      .headers_mut()
+      .append(SET_COOKIE, clear_oidc_state_cookie(&state)?);
+    return Ok(response);
   }
 
   let response = session::issue_session(&state, &user, "oidc").await?;
   let exchange_code = persist_oidc_result(&state, TokenGrantResponse::Token(Box::new(response))).await?;
 
-  Ok(Redirect::to(&build_redirect_url(
+  let mut response = Redirect::to(&build_redirect_url(
     validated_redirect_to(&state, flow.redirect_to.as_deref())?,
     &exchange_code,
-  )?))
+  )?)
+  .into_response();
+  response
+    .headers_mut()
+    .append(SET_COOKIE, clear_oidc_state_cookie(&state)?);
+  Ok(response)
 }
 
 async fn provision_sso_user(
@@ -211,13 +241,14 @@ async fn provision_sso_user(
   }
 
   if let Some(email) = profile.email.as_deref() {
-    let existing: Option<(Uuid, bool)> =
-      sqlx::query_as::<_, (Uuid, bool)>("SELECT id, is_sso_user FROM auth.users WHERE email = $1")
+    let existing: Option<User> = sqlx::query_as::<_, User>(
+      "SELECT id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_sso_user, is_anonymous, banned_until, deleted_at, created_at, updated_at FROM auth.users WHERE lower(email) = lower($1)",
+    )
         .bind(email)
         .fetch_optional(&state.db)
         .await?;
-    if existing.is_some() {
-      return Err(AuthError::NotAuthorized);
+    if let Some(existing_user) = existing {
+      return link_sso_user(state, provider, profile, existing_user, now).await;
     }
   }
 
@@ -263,6 +294,96 @@ async fn provision_sso_user(
   .await?;
 
   Ok(user)
+}
+
+async fn link_sso_user(
+  state: &AppState,
+  provider: &oidc::OidcProviderConfig,
+  profile: &oidc::NormalizedOidcProfile,
+  user: User,
+  now: chrono::DateTime<Utc>,
+) -> Result<User> {
+  if !profile.email_verified {
+    return Err(AuthError::NotAuthorized);
+  }
+  ensure_user_signin_allowed(&user)?;
+
+  let app_metadata = merged_app_metadata(user.raw_app_meta_data.clone(), &provider.name);
+  sqlx::query(
+    "UPDATE auth.users SET raw_app_meta_data = $1, is_sso_user = true, updated_at = $2 WHERE id = $3",
+  )
+  .bind(&app_metadata)
+  .bind(now)
+  .bind(user.id)
+  .execute(&state.db)
+  .await?;
+  sqlx::query(
+    "INSERT INTO auth.identities (id, provider_id, user_id, identity_data, provider, last_sign_in_at, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+  )
+  .bind(Uuid::new_v4())
+  .bind(&profile.subject)
+  .bind(user.id)
+  .bind(&profile.raw_claims)
+  .bind(&provider.name)
+  .bind(now)
+  .bind(now)
+  .bind(now)
+  .execute(&state.db)
+  .await?;
+
+  fetch_user(&state.db, user.id).await
+}
+
+fn merged_app_metadata(existing: Option<serde_json::Value>, provider_name: &str) -> serde_json::Value {
+  let mut metadata = match existing {
+    Some(serde_json::Value::Object(map)) => serde_json::Value::Object(map),
+    _ => serde_json::json!({}),
+  };
+  let object = metadata
+    .as_object_mut()
+    .expect("app metadata initialization must yield an object");
+  let providers = object
+    .entry("providers".to_string())
+    .or_insert_with(|| serde_json::json!([]));
+  if !providers.is_array() {
+    *providers = serde_json::json!([]);
+  }
+  let providers_array = providers
+    .as_array_mut()
+    .expect("providers initialization must yield an array");
+  if !providers_array
+    .iter()
+    .any(|value| value.as_str() == Some(provider_name))
+  {
+    providers_array.push(serde_json::Value::String(provider_name.to_string()));
+  }
+  metadata
+}
+
+fn oidc_state_cookie(headers: &HeaderMap) -> Option<&str> {
+  headers
+    .get(COOKIE)
+    .and_then(|value| value.to_str().ok())
+    .and_then(|cookie_header| {
+      cookie_header.split(';').find_map(|pair| {
+        let (name, value) = pair.trim().split_once('=')?;
+        (name == OIDC_STATE_COOKIE_NAME).then_some(value)
+      })
+    })
+}
+
+fn build_oidc_state_cookie(state: &AppState, value: &str, max_age_seconds: i64) -> Result<HeaderValue> {
+  let secure = state.site_url.starts_with("https://");
+  let cookie = format!(
+    "{OIDC_STATE_COOKIE_NAME}={value}; Max-Age={max_age_seconds}; Path=/callback; HttpOnly; SameSite=Lax{}",
+    if secure { "; Secure" } else { "" }
+  );
+  HeaderValue::from_str(&cookie)
+    .map_err(|e| AuthError::InternalError(format!("failed to build OIDC state cookie: {e}")))
+}
+
+fn clear_oidc_state_cookie(state: &AppState) -> Result<HeaderValue> {
+  build_oidc_state_cookie(state, "", 0)
 }
 
 async fn fetch_user(db: &sqlx::PgPool, user_id: Uuid) -> Result<User> {

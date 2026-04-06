@@ -60,14 +60,14 @@ pub async fn send_otp(
     let now = Utc::now();
 
     sqlx::query(
-            "UPDATE auth.users SET confirmation_token = $1, confirmation_sent_at = $2, updated_at = $3 WHERE id = $4"
-        )
-        .bind(&token)
-        .bind(now)
-        .bind(now)
-        .bind(user_id)
-        .execute(&state.db)
-        .await?;
+      "UPDATE auth.users SET magic_link_token = $1, magic_link_sent_at = $2, updated_at = $3 WHERE id = $4",
+    )
+    .bind(&token)
+    .bind(now)
+    .bind(now)
+    .bind(user_id)
+    .execute(&state.db)
+    .await?;
 
     // Send magic-link / OTP email.
     let magic_link_url = format!("{}/verify?token={}&type=magiclink", state.site_url, token);

@@ -1,10 +1,11 @@
 use std::net::{
   IpAddr,
-  Ipv4Addr,
+  SocketAddr,
 };
 
 use axum::Json;
 use axum::extract::{
+  ConnectInfo,
   Path,
   State,
 };
@@ -25,7 +26,10 @@ use crate::error::{
   AuthError,
   Result,
 };
-use crate::middleware::auth::AuthUser;
+use crate::middleware::auth::{
+  AuthUser,
+  extract_bearer_token_value,
+};
 use crate::model::{
   MfaEnrollResponse,
   MfaFactorResponse,
@@ -86,6 +90,7 @@ pub async fn list_factors(
 
 pub async fn create_totp_factor(
   State(state): State<AppState>,
+  ConnectInfo(client_addr): ConnectInfo<SocketAddr>,
   AuthUser { claims, user }: AuthUser,
   Json(req): Json<CreateTotpFactorRequest>,
 ) -> Result<Json<MfaEnrollResponse>> {
@@ -94,6 +99,7 @@ pub async fn create_totp_factor(
     &state,
     &claims,
     &user,
+    client_addr.ip(),
     req.current_password.as_deref(),
     req.reauthentication_token.as_deref(),
   )
@@ -272,7 +278,7 @@ pub async fn create_pending_login(
 
 pub async fn verify_pending_totp(
   state: &AppState,
-  headers: &HeaderMap,
+  client_ip: IpAddr,
   mfa_token: &str,
   factor_id: Uuid,
   code: &str,
@@ -284,14 +290,23 @@ pub async fn verify_pending_totp(
   let user_id = flow
     .user_id
     .ok_or_else(|| AuthError::InternalError("pending MFA flow missing user".to_string()))?;
-  let factor = verified_factor_by_id(&state.db, factor_id, user_id).await?;
+  let factor = verified_factor_verify_state_by_id(&state.db, factor_id, user_id).await?;
   let encrypted_secret = factor
     .secret
     .as_deref()
     .ok_or_else(|| AuthError::InternalError("missing TOTP secret".to_string()))?;
   let decrypted_secret = mfa::decrypt_secret(encrypted_secret, &state.mfa_encryption_key)?;
+  let matched_step = mfa::matching_code_step(&decrypted_secret, code, now.timestamp())?;
+  let Some(matched_step) = matched_step else {
+    return Err(AuthError::ValidationFailed("Invalid TOTP code".to_string()));
+  };
+  if factor.last_verified_totp_step == Some(matched_step) {
+    return Err(AuthError::ValidationFailed(
+      "TOTP code has already been used for this factor".to_string(),
+    ));
+  }
   let challenge_id = Uuid::new_v4();
-  let ip_address = client_ip(headers);
+  let ip_address = client_ip;
 
   sqlx::query(
     "INSERT INTO auth.mfa_challenges (id, factor_id, created_at, verified_at, ip_address, otp_code) VALUES ($1, $2, $3, NULL, $4::inet, NULL)",
@@ -303,17 +318,16 @@ pub async fn verify_pending_totp(
   .execute(&state.db)
   .await?;
 
-  if !mfa::verify_code(&decrypted_secret, code, now.timestamp())? {
-    return Err(AuthError::ValidationFailed("Invalid TOTP code".to_string()));
-  }
-
   sqlx::query("UPDATE auth.mfa_challenges SET verified_at = $1 WHERE id = $2")
     .bind(now)
     .bind(challenge_id)
     .execute(&state.db)
     .await?;
-  sqlx::query("UPDATE auth.mfa_factors SET last_challenged_at = $1, updated_at = $2 WHERE id = $3")
+  sqlx::query(
+    "UPDATE auth.mfa_factors SET last_challenged_at = $1, last_verified_totp_step = $2, updated_at = $3 WHERE id = $4",
+  )
     .bind(now)
+    .bind(matched_step)
     .bind(now)
     .bind(factor_id)
     .execute(&state.db)
@@ -370,9 +384,13 @@ async fn factor_by_id(db: &PgPool, factor_id: Uuid, user_id: Uuid) -> Result<Mfa
   .ok_or(AuthError::UserNotFound)
 }
 
-async fn verified_factor_by_id(db: &PgPool, factor_id: Uuid, user_id: Uuid) -> Result<MfaFactorRow> {
-  sqlx::query_as::<_, MfaFactorRow>(
-    "SELECT id, user_id, friendly_name, factor_type::text as factor_type, status::text as status, secret, created_at, updated_at, last_challenged_at FROM auth.mfa_factors WHERE id = $1 AND user_id = $2 AND factor_type = 'totp'::auth.factor_type AND status = 'verified'::auth.factor_status",
+async fn verified_factor_verify_state_by_id(
+  db: &PgPool,
+  factor_id: Uuid,
+  user_id: Uuid,
+) -> Result<TotpFactorVerifyStateRow> {
+  sqlx::query_as::<_, TotpFactorVerifyStateRow>(
+    "SELECT id, secret, last_verified_totp_step, enrollment_verify_attempts, last_enrollment_verify_attempt_at FROM auth.mfa_factors WHERE id = $1 AND user_id = $2 AND factor_type = 'totp'::auth.factor_type AND status = 'verified'::auth.factor_status",
   )
   .bind(factor_id)
   .bind(user_id)
@@ -539,21 +557,11 @@ async fn record_failed_enrollment_attempt(
   Ok(())
 }
 
-fn client_ip(headers: &HeaderMap) -> IpAddr {
-  headers
-    .get("x-forwarded-for")
-    .and_then(|value| value.to_str().ok())
-    .and_then(|value| value.split(',').next_back())
-    .or_else(|| headers.get("x-real-ip").and_then(|value| value.to_str().ok()))
-    .and_then(|value| value.trim().parse::<IpAddr>().ok())
-    .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
-}
-
 fn extract_mfa_token<'a>(headers: &'a HeaderMap, req: &'a PendingMfaFactorsRequest) -> Result<&'a str> {
   if let Some(value) = headers
     .get(axum::http::header::AUTHORIZATION)
     .and_then(|value| value.to_str().ok())
-    .and_then(|value| value.strip_prefix("Bearer "))
+    .and_then(extract_bearer_token_value)
   {
     return Ok(value);
   }

@@ -34,6 +34,8 @@ pub enum AuthError {
   NotAdmin,
   #[error("User banned")]
   UserBanned,
+  #[error("Too many requests")]
+  TooManyRequests,
   #[error("Database error: {0}")]
   DatabaseError(#[from] sqlx::Error),
   #[error("Internal error: {0}")]
@@ -54,6 +56,7 @@ impl AuthError {
       AuthError::NotAuthorized => StatusCode::UNAUTHORIZED,
       AuthError::NotAdmin => StatusCode::FORBIDDEN,
       AuthError::UserBanned => StatusCode::FORBIDDEN,
+      AuthError::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
       AuthError::DatabaseError(_) => StatusCode::INTERNAL_SERVER_ERROR,
       AuthError::InternalError(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -72,6 +75,7 @@ impl AuthError {
       AuthError::NotAuthorized => "no_authorization",
       AuthError::NotAdmin => "not_admin",
       AuthError::UserBanned => "user_banned",
+      AuthError::TooManyRequests => "too_many_requests",
       AuthError::DatabaseError(_) => "unexpected_failure",
       AuthError::InternalError(_) => "unexpected_failure",
     }
@@ -123,6 +127,7 @@ mod tests {
     assert_eq!(AuthError::NotAuthorized.error_code(), "no_authorization");
     assert_eq!(AuthError::NotAdmin.error_code(), "not_admin");
     assert_eq!(AuthError::UserBanned.error_code(), "user_banned");
+    assert_eq!(AuthError::TooManyRequests.error_code(), "too_many_requests");
     assert_eq!(
       AuthError::InternalError("oops".into()).error_code(),
       "unexpected_failure"
@@ -154,6 +159,10 @@ mod tests {
     assert_eq!(AuthError::NotAuthorized.status_code(), StatusCode::UNAUTHORIZED);
     assert_eq!(AuthError::NotAdmin.status_code(), StatusCode::FORBIDDEN);
     assert_eq!(AuthError::UserBanned.status_code(), StatusCode::FORBIDDEN);
+    assert_eq!(
+      AuthError::TooManyRequests.status_code(),
+      StatusCode::TOO_MANY_REQUESTS
+    );
     assert_eq!(
       AuthError::InternalError("".into()).status_code(),
       StatusCode::INTERNAL_SERVER_ERROR

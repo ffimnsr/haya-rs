@@ -273,8 +273,8 @@ impl Mailer {
   /// `{{key}}` placeholder in both the HTML and plain-text templates.
   pub async fn send(&self, kind: EmailKind, to_email: &str, vars: &[(&str, &str)]) -> anyhow::Result<()> {
     let (html_tpl, txt_tpl) = self.load_template(&kind);
-    let html = render(&html_tpl, vars);
-    let text = render(&txt_tpl, vars);
+    let html = render_html(&html_tpl, vars);
+    let text = render_text(&txt_tpl, vars);
 
     let from: Mailbox = format!("{} <{}>", self.config.from_name, self.config.from_email).parse()?;
     let to: Mailbox = to_email.parse()?;
@@ -335,11 +335,50 @@ fn build_transport(config: &MailerConfig) -> anyhow::Result<AsyncSmtpTransport<T
   Ok(transport)
 }
 
-/// Replaces every `{{key}}` placeholder in `template` with its matching value.
-fn render(template: &str, vars: &[(&str, &str)]) -> String {
+fn render_html(template: &str, vars: &[(&str, &str)]) -> String {
+  let mut result = template.to_string();
+  for (key, value) in vars {
+    result = result.replace(&format!("{{{{{key}}}}}"), &escape_html(value));
+  }
+  result
+}
+
+fn render_text(template: &str, vars: &[(&str, &str)]) -> String {
   let mut result = template.to_string();
   for (key, value) in vars {
     result = result.replace(&format!("{{{{{key}}}}}"), value);
   }
   result
+}
+
+fn escape_html(value: &str) -> String {
+  let mut escaped = String::with_capacity(value.len());
+  for ch in value.chars() {
+    match ch {
+      '&' => escaped.push_str("&amp;"),
+      '<' => escaped.push_str("&lt;"),
+      '>' => escaped.push_str("&gt;"),
+      '"' => escaped.push_str("&quot;"),
+      '\'' => escaped.push_str("&#x27;"),
+      _ => escaped.push(ch),
+    }
+  }
+  escaped
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn render_html_escapes_values() {
+    let rendered = render_html("<p>{{email}}</p>", &[("email", "\"><script>alert(1)</script>")]);
+    assert_eq!(rendered, "<p>&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;</p>");
+  }
+
+  #[test]
+  fn render_text_keeps_plain_value() {
+    let rendered = render_text("{{email}}", &[("email", "\"><script>alert(1)</script>")]);
+    assert_eq!(rendered, "\"><script>alert(1)</script>");
+  }
 }

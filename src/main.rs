@@ -13,7 +13,9 @@ mod utils;
 use std::env;
 use std::sync::Arc;
 
+use base64::Engine as _;
 use clap::Parser;
+use rand::RngCore;
 use tokio::sync::RwLock;
 
 use crate::auth::{
@@ -26,6 +28,7 @@ use crate::defaults::{
   DEFAULT_DATABASE_URL,
   DEFAULT_PORT,
   REFRESH_TOKEN_LIFETIME,
+  SESSION_IDLE_TIMEOUT_SECS,
 };
 use crate::mailer::{
   Mailer,
@@ -145,13 +148,15 @@ fn build_runtime_bootstrap(require_database: bool) -> anyhow::Result<RuntimeBoot
     },
     Ok(secret) => secret,
     Err(_) if dev_mode => {
-      let dev_secret = "super-secret-jwt-token-with-at-least-32-characters-long";
+      let mut bytes = [0u8; 32];
+      rand::rng().fill_bytes(&mut bytes);
+      let dev_secret = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
       tracing::warn!(
-        "⚠️  JWT_SECRET not set! Using insecure development secret. \
-                   Set HAYA_DEV_MODE=1 only for local development. \
-                   NEVER use this configuration in production!"
+        "JWT_SECRET not set; generated an ephemeral development secret. \
+         Tokens issued in this mode become invalid after restart. \
+         Set HAYA_DEV_MODE=1 only for local development."
       );
-      dev_secret.to_string()
+      dev_secret
     },
     Err(_) if require_database => {
       anyhow::bail!(
@@ -182,6 +187,10 @@ fn build_runtime_bootstrap(require_database: bool) -> anyhow::Result<RuntimeBoot
     .ok()
     .and_then(|v| v.parse().ok())
     .unwrap_or(REFRESH_TOKEN_LIFETIME);
+  let session_idle_timeout_secs: i64 = env::var("SESSION_IDLE_TIMEOUT_SECS")
+    .ok()
+    .and_then(|v| v.parse().ok())
+    .unwrap_or(SESSION_IDLE_TIMEOUT_SECS);
 
   let site_url = env::var("SITE_URL").unwrap_or_else(|_| "http://localhost:9999".to_string());
   let cors_allowed_origins = parse_origin_list_env("CORS_ALLOWED_ORIGINS");
@@ -260,6 +269,7 @@ fn build_runtime_bootstrap(require_database: bool) -> anyhow::Result<RuntimeBoot
     issuer,
     jwt_exp,
     refresh_token_exp,
+    session_idle_timeout_secs,
     pid_file,
     jwt_secret_len: jwt_secret.len(),
     mailer_autoconfirm,
@@ -289,6 +299,7 @@ async fn build_app_state(bootstrap: &RuntimeBootstrap) -> anyhow::Result<AppStat
     mfa_encryption_key: bootstrap.mfa_encryption_key,
     jwt_exp: bootstrap.config.jwt_exp,
     refresh_token_exp: bootstrap.config.refresh_token_exp,
+    session_idle_timeout_secs: bootstrap.config.session_idle_timeout_secs,
     site_url: bootstrap.config.site_url.clone(),
     allowed_redirect_origins: bootstrap.config.allowed_redirect_origins.clone(),
     site_name: bootstrap.config.site_name.clone(),

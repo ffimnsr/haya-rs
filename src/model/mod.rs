@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::error::Result;
 
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Clone, Deserialize, FromRow)]
 pub struct User {
   pub id: Uuid,
   pub instance_id: Option<Uuid>,
@@ -323,6 +323,7 @@ pub struct SessionRow {
   pub factor_id: Option<Uuid>,
   pub aal: Option<String>,
   pub not_after: Option<DateTime<Utc>>,
+  pub refreshed_at: Option<chrono::NaiveDateTime>,
   pub created_at: Option<DateTime<Utc>>,
   pub updated_at: Option<DateTime<Utc>>,
 }

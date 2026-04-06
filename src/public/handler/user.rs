@@ -1,7 +1,11 @@
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{
+  ConnectInfo,
+  State,
+};
 use chrono::Utc;
 use serde::Deserialize;
+use std::net::SocketAddr;
 use uuid::Uuid;
 
 use crate::auth::{
@@ -40,6 +44,7 @@ pub struct UpdateUserRequest {
 
 pub async fn update_user(
   State(state): State<AppState>,
+  ConnectInfo(client_addr): ConnectInfo<SocketAddr>,
   AuthUser { claims, user }: AuthUser,
   Json(req): Json<UpdateUserRequest>,
 ) -> Result<Json<UserResponse>> {
@@ -47,6 +52,10 @@ pub async fn update_user(
     .sub
     .parse()
     .map_err(|_| AuthError::InternalError("Invalid user_id in token".to_string()))?;
+  let current_session_id: Uuid = claims
+    .session_id
+    .parse()
+    .map_err(|_| AuthError::InternalError("Invalid session_id in token".to_string()))?;
 
   let now = Utc::now();
   let changing_sensitive_fields = req.password.is_some() || req.email.is_some() || req.phone.is_some();
@@ -56,6 +65,7 @@ pub async fn update_user(
       &state,
       &claims,
       &user,
+      client_addr.ip(),
       req.current_password.as_deref(),
       req.reauthentication_token.as_deref(),
     )
@@ -71,6 +81,19 @@ pub async fn update_user(
       .bind(hashed)
       .bind(now)
       .bind(user_id)
+      .execute(&mut *tx)
+      .await?;
+    sqlx::query(
+      "UPDATE auth.refresh_tokens SET revoked = true, updated_at = $1 WHERE user_id = $2 AND session_id IS DISTINCT FROM $3",
+    )
+    .bind(now)
+    .bind(user_id.to_string())
+    .bind(current_session_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DELETE FROM auth.sessions WHERE user_id = $1 AND id IS DISTINCT FROM $2")
+      .bind(user_id)
+      .bind(current_session_id)
       .execute(&mut *tx)
       .await?;
   }

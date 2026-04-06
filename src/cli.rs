@@ -30,6 +30,7 @@ use crate::auth::{
   jwt,
   oidc,
   password,
+  rate_limit,
   session,
 };
 use crate::mailer::EmailKind;
@@ -509,6 +510,7 @@ struct SettingsView {
   cors_allowed_origins: Vec<String>,
   jwt_exp: i64,
   refresh_token_exp: i64,
+  session_idle_timeout_secs: i64,
   jwt_secret_len: usize,
   mfa_key_source: &'static str,
   mailer_autoconfirm: bool,
@@ -632,6 +634,7 @@ struct TokenCleanupResult {
   expired_refresh_tokens_removed: i64,
   expired_sessions_removed: i64,
   expired_flow_states_removed: i64,
+  expired_rate_limits_removed: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -793,6 +796,7 @@ fn show_settings(config: &RuntimeConfig) -> anyhow::Result<()> {
     cors_allowed_origins: config.cors_allowed_origins.clone(),
     jwt_exp: config.jwt_exp,
     refresh_token_exp: config.refresh_token_exp,
+    session_idle_timeout_secs: config.session_idle_timeout_secs,
     jwt_secret_len: config.jwt_secret_len,
     mfa_key_source: config.mfa_key_source,
     mailer_autoconfirm: config.mailer_autoconfirm,
@@ -1576,6 +1580,11 @@ async fn cleanup_tokens(db: &PgPool, config: &RuntimeConfig, args: TokenCleanupA
     "SELECT COUNT(*) FROM auth.flow_state WHERE COALESCE(expires_at, created_at + INTERVAL '1 day') <= NOW()",
   )
   .await?;
+  let expired_rate_limits_removed = count_query(
+    db,
+    "SELECT COUNT(*) FROM auth.rate_limits WHERE expires_at <= NOW()",
+  )
+  .await?;
 
   if !args.dry_run {
     sqlx::query("DELETE FROM auth.refresh_tokens WHERE revoked = true")
@@ -1593,6 +1602,7 @@ async fn cleanup_tokens(db: &PgPool, config: &RuntimeConfig, args: TokenCleanupA
     )
     .execute(db)
     .await?;
+    let _ = rate_limit::delete_expired(db).await?;
   }
 
   print_json(&TokenCleanupResult {
@@ -1601,6 +1611,7 @@ async fn cleanup_tokens(db: &PgPool, config: &RuntimeConfig, args: TokenCleanupA
     expired_refresh_tokens_removed,
     expired_sessions_removed,
     expired_flow_states_removed,
+    expired_rate_limits_removed,
   })
 }
 
@@ -1649,6 +1660,9 @@ fn validate_config(config: &RuntimeConfig) -> anyhow::Result<()> {
   }
   if config.jwt_secret_len < 32 {
     issues.push("JWT secret is shorter than 32 characters".to_string());
+  }
+  if config.session_idle_timeout_secs <= 0 {
+    issues.push("session idle timeout must be positive".to_string());
   }
   if config.port == 0 {
     issues.push("port must be non-zero".to_string());
@@ -1936,9 +1950,12 @@ async fn db_vacuum_token_tables(db: &PgPool) -> anyhow::Result<()> {
     .execute(db)
     .await?;
   sqlx::raw_sql("VACUUM ANALYZE auth.sessions").execute(db).await?;
+  sqlx::raw_sql("VACUUM ANALYZE auth.rate_limits")
+    .execute(db)
+    .await?;
   print_json(&serde_json::json!({
     "vacuumed": true,
-    "tables": ["auth.refresh_tokens", "auth.flow_state", "auth.sessions"],
+    "tables": ["auth.refresh_tokens", "auth.flow_state", "auth.sessions", "auth.rate_limits"],
   }))
 }
 

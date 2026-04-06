@@ -62,9 +62,34 @@ fn extract_bearer_token(parts: &Parts) -> Result<String, AuthError> {
     .and_then(|v| v.to_str().ok())
     .ok_or(AuthError::NotAuthorized)?;
 
-  let token = auth_header
-    .strip_prefix("Bearer ")
-    .ok_or(AuthError::NotAuthorized)?;
+  extract_bearer_token_value(auth_header)
+    .map(ToOwned::to_owned)
+    .ok_or(AuthError::NotAuthorized)
+}
 
-  Ok(token.to_string())
+pub(crate) fn extract_bearer_token_value(auth_header: &str) -> Option<&str> {
+  let (scheme, token) = auth_header.split_once(' ')?;
+  if !scheme.eq_ignore_ascii_case("bearer") || token.is_empty() {
+    return None;
+  }
+  Some(token)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::extract_bearer_token_value;
+
+  #[test]
+  fn bearer_scheme_is_case_insensitive() {
+    assert_eq!(extract_bearer_token_value("Bearer token"), Some("token"));
+    assert_eq!(extract_bearer_token_value("bearer token"), Some("token"));
+    assert_eq!(extract_bearer_token_value("BeArEr token"), Some("token"));
+  }
+
+  #[test]
+  fn bearer_scheme_rejects_invalid_headers() {
+    assert_eq!(extract_bearer_token_value("Basic token"), None);
+    assert_eq!(extract_bearer_token_value("Bearer"), None);
+    assert_eq!(extract_bearer_token_value("Bearer "), None);
+  }
 }

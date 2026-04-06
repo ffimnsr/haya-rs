@@ -3,7 +3,11 @@
 
 do $$
 begin
-create role e_auth noinherit createrole noreplication login password 'mysecretpassword';
+execute format(
+  'create role e_auth noinherit createrole noreplication login password %L',
+  md5(random()::text || clock_timestamp()::text || txid_current()::text)
+  || md5(random()::text || clock_timestamp()::text || txid_current()::text)
+);
 exception when duplicate_object then raise notice '%, skipping', sqlerrm using errcode = sqlstate;
 end
 $$;

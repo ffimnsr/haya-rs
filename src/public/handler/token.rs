@@ -1,21 +1,28 @@
 use axum::Json;
 use axum::extract::{
+  ConnectInfo,
   Query,
   State,
 };
 use axum::http::HeaderMap;
 use chrono::Utc;
 use serde::Deserialize;
+use std::net::{
+  IpAddr,
+  SocketAddr,
+};
 use uuid::Uuid;
 
 use crate::auth::{
   password,
+  rate_limit,
   session,
 };
 use crate::error::{
   AuthError,
   Result,
 };
+use crate::middleware::auth::extract_bearer_token_value;
 use crate::model::{
   RefreshToken,
   TokenGrantResponse,
@@ -28,6 +35,9 @@ use crate::public::handler::{
 };
 use crate::state::AppState;
 
+const PASSWORD_GRANT_RATE_LIMIT_ATTEMPTS: u32 = 10;
+const PASSWORD_GRANT_RATE_LIMIT_WINDOW_SECS: u64 = 300;
+
 #[derive(Debug, Deserialize)]
 pub struct TokenQuery {
   pub grant_type: String,
@@ -35,16 +45,18 @@ pub struct TokenQuery {
 
 pub async fn token(
   State(state): State<AppState>,
+  ConnectInfo(client_addr): ConnectInfo<SocketAddr>,
   Query(query): Query<TokenQuery>,
   headers: HeaderMap,
   Json(body): Json<serde_json::Value>,
 ) -> Result<Json<TokenGrantResponse>> {
+  let client_ip = client_addr.ip();
   match query.grant_type.as_str() {
-    "password" => handle_password_grant(state, body).await.map(Json),
+    "password" => handle_password_grant(state, client_ip, body).await.map(Json),
     "refresh_token" => handle_refresh_grant(state, body)
       .await
       .map(|response| Json(TokenGrantResponse::Token(Box::new(response)))),
-    "mfa_totp" => handle_mfa_totp_grant(state, headers, body)
+    "mfa_totp" => handle_mfa_totp_grant(state, headers, client_ip, body)
       .await
       .map(|response| Json(TokenGrantResponse::Token(Box::new(response)))),
     "oidc_callback" => sso::exchange_callback_code(state, body).await.map(Json),
@@ -55,7 +67,11 @@ pub async fn token(
   }
 }
 
-async fn handle_password_grant(state: AppState, body: serde_json::Value) -> Result<TokenGrantResponse> {
+async fn handle_password_grant(
+  state: AppState,
+  client_ip: IpAddr,
+  body: serde_json::Value,
+) -> Result<TokenGrantResponse> {
   let email = body
     .get("email")
     .and_then(|v| v.as_str())
@@ -64,6 +80,18 @@ async fn handle_password_grant(state: AppState, body: serde_json::Value) -> Resu
     .get("password")
     .and_then(|v| v.as_str())
     .ok_or_else(|| AuthError::ValidationFailed("password is required".to_string()))?;
+  let rate_limit_key = password_grant_rate_limit_key(email, client_ip);
+  let ip_rate_limit_key = password_grant_ip_rate_limit_key(client_ip);
+  if rate_limit::is_limited(&state.db, &rate_limit_key, PASSWORD_GRANT_RATE_LIMIT_ATTEMPTS).await?
+    || rate_limit::is_limited(
+      &state.db,
+      &ip_rate_limit_key,
+      PASSWORD_GRANT_RATE_LIMIT_ATTEMPTS * 3,
+    )
+    .await?
+  {
+    return Err(AuthError::TooManyRequests);
+  }
 
   let Some(user) = sqlx::query_as::<_, User>(
         "SELECT id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_sso_user, is_anonymous, banned_until, deleted_at, created_at, updated_at FROM auth.users WHERE email = $1"
@@ -72,33 +100,98 @@ async fn handle_password_grant(state: AppState, body: serde_json::Value) -> Resu
     .fetch_optional(&state.db)
     .await? else {
       password::burn_password_work(pw)?;
+      rate_limit::record_failure(&state.db, &rate_limit_key, PASSWORD_GRANT_RATE_LIMIT_WINDOW_SECS as i64)
+        .await?;
+      rate_limit::record_failure(&state.db, &ip_rate_limit_key, PASSWORD_GRANT_RATE_LIMIT_WINDOW_SECS as i64)
+        .await?;
       return Err(AuthError::InvalidCredentials);
     };
 
   if user.deleted_at.is_some() {
     password::burn_password_work(pw)?;
+    rate_limit::record_failure(
+      &state.db,
+      &rate_limit_key,
+      PASSWORD_GRANT_RATE_LIMIT_WINDOW_SECS as i64,
+    )
+    .await?;
+    rate_limit::record_failure(
+      &state.db,
+      &ip_rate_limit_key,
+      PASSWORD_GRANT_RATE_LIMIT_WINDOW_SECS as i64,
+    )
+    .await?;
     return Err(AuthError::InvalidCredentials);
   }
 
   if user.banned_until.map(|value| value > Utc::now()).unwrap_or(false) {
     password::burn_password_work(pw)?;
+    rate_limit::record_failure(
+      &state.db,
+      &rate_limit_key,
+      PASSWORD_GRANT_RATE_LIMIT_WINDOW_SECS as i64,
+    )
+    .await?;
+    rate_limit::record_failure(
+      &state.db,
+      &ip_rate_limit_key,
+      PASSWORD_GRANT_RATE_LIMIT_WINDOW_SECS as i64,
+    )
+    .await?;
     return Err(AuthError::InvalidCredentials);
   }
 
   let Some(hash) = user.encrypted_password.as_deref() else {
     password::burn_password_work(pw)?;
+    rate_limit::record_failure(
+      &state.db,
+      &rate_limit_key,
+      PASSWORD_GRANT_RATE_LIMIT_WINDOW_SECS as i64,
+    )
+    .await?;
+    rate_limit::record_failure(
+      &state.db,
+      &ip_rate_limit_key,
+      PASSWORD_GRANT_RATE_LIMIT_WINDOW_SECS as i64,
+    )
+    .await?;
     return Err(AuthError::InvalidCredentials);
   };
 
   if !password::verify_password(pw, hash)? {
+    rate_limit::record_failure(
+      &state.db,
+      &rate_limit_key,
+      PASSWORD_GRANT_RATE_LIMIT_WINDOW_SECS as i64,
+    )
+    .await?;
+    rate_limit::record_failure(
+      &state.db,
+      &ip_rate_limit_key,
+      PASSWORD_GRANT_RATE_LIMIT_WINDOW_SECS as i64,
+    )
+    .await?;
     return Err(AuthError::InvalidCredentials);
   }
 
   // Require email confirmation when mailer_autoconfirm is disabled
   if !state.mailer_autoconfirm && user.email.is_some() && user.email_confirmed_at.is_none() {
     password::burn_password_work(pw)?;
+    rate_limit::record_failure(
+      &state.db,
+      &rate_limit_key,
+      PASSWORD_GRANT_RATE_LIMIT_WINDOW_SECS as i64,
+    )
+    .await?;
+    rate_limit::record_failure(
+      &state.db,
+      &ip_rate_limit_key,
+      PASSWORD_GRANT_RATE_LIMIT_WINDOW_SECS as i64,
+    )
+    .await?;
     return Err(AuthError::InvalidCredentials);
   }
+  rate_limit::clear(&state.db, &rate_limit_key).await?;
 
   let factors = mfa::verified_factors_by_user_id(&state.db, user.id).await?;
   if !factors.is_empty() {
@@ -198,12 +291,13 @@ async fn handle_refresh_grant(state: AppState, body: serde_json::Value) -> Resul
 async fn handle_mfa_totp_grant(
   state: AppState,
   headers: HeaderMap,
+  client_ip: IpAddr,
   body: serde_json::Value,
 ) -> Result<TokenResponse> {
   let mfa_token = headers
     .get(axum::http::header::AUTHORIZATION)
     .and_then(|value| value.to_str().ok())
-    .and_then(|value| value.strip_prefix("Bearer "))
+    .and_then(extract_bearer_token_value)
     .ok_or_else(|| {
       AuthError::ValidationFailed("Authorization header with Bearer MFA token is required".to_string())
     })?;
@@ -219,5 +313,13 @@ async fn handle_mfa_totp_grant(
     .and_then(|v| v.as_str())
     .ok_or_else(|| AuthError::ValidationFailed("code is required".to_string()))?;
 
-  mfa::verify_pending_totp(&state, &headers, mfa_token, factor_id, code).await
+  mfa::verify_pending_totp(&state, client_ip, mfa_token, factor_id, code).await
+}
+
+fn password_grant_rate_limit_key(email: &str, client_ip: IpAddr) -> String {
+  format!("password:{}:{client_ip}", email.trim().to_ascii_lowercase())
+}
+
+fn password_grant_ip_rate_limit_key(client_ip: IpAddr) -> String {
+  format!("password-ip:{client_ip}")
 }

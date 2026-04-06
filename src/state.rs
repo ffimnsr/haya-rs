@@ -16,6 +16,7 @@ pub struct AppState {
   pub mfa_encryption_key: [u8; 32],
   pub jwt_exp: i64,
   pub refresh_token_exp: i64,
+  pub session_idle_timeout_secs: i64,
   /// Base URL of the site (used for generating email links in recovery/confirmation)
   pub site_url: String,
   pub allowed_redirect_origins: Vec<String>,
@@ -42,6 +43,7 @@ pub struct RuntimeConfig {
   pub issuer: String,
   pub jwt_exp: i64,
   pub refresh_token_exp: i64,
+  pub session_idle_timeout_secs: i64,
   pub pid_file: String,
   pub jwt_secret_len: usize,
   pub mailer_autoconfirm: bool,
