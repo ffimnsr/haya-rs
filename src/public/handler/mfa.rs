@@ -165,7 +165,7 @@ pub async fn verify_totp_factor(
   let user_id = user.id;
   let now = Utc::now();
   let mut tx = state.db.begin().await?;
-  let factor = factor_verify_state_by_id(tx.as_mut(), factor_id, user_id).await?;
+  let factor = totp_factor_verify_state_by_id(tx.as_mut(), factor_id, user_id).await?;
   ensure_enrollment_verify_attempts_available(&factor, now)?;
   let secret = factor
     .secret
@@ -220,7 +220,7 @@ pub async fn delete_factor(
   Path(factor_id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>> {
   let user_id = user.id;
-  let factor = factor_by_id(&state.db, factor_id, user_id).await?;
+  let factor = totp_factor_by_id(&state.db, factor_id, user_id).await?;
 
   if factor.status == "verified" && claims.aal != "aal2" {
     return Err(AuthError::NotAuthorized);
@@ -260,7 +260,7 @@ pub async fn list_pending_factors(
   let user_id = flow
     .user_id
     .ok_or_else(|| AuthError::InternalError("pending MFA flow missing user".to_string()))?;
-  let factors = verified_factors_by_user_id(&state.db, user_id).await?;
+  let factors = verified_totp_factors_by_user_id(&state.db, user_id).await?;
 
   Ok(Json(factors.into_iter().map(Into::into).collect()))
 }
@@ -270,8 +270,8 @@ pub async fn create_pending_login(
   user_id: Uuid,
   authentication_method: &str,
 ) -> Result<PendingMfaResponse> {
-  let factors = verified_factors_by_user_id(&state.db, user_id).await?;
-  if factors.is_empty() {
+  let factors = verified_totp_factors_by_user_id(&state.db, user_id).await?;
+  if !requires_totp_challenge(&factors) {
     return Err(AuthError::InternalError(
       "no verified TOTP factor available".to_string(),
     ));
@@ -323,7 +323,7 @@ pub async fn verify_pending_totp(
   let user_id = flow
     .user_id
     .ok_or_else(|| AuthError::InternalError("pending MFA flow missing user".to_string()))?;
-  let factor = verified_factor_verify_state_by_id(&state.db, factor_id, user_id).await?;
+  let factor = verified_totp_factor_verify_state_by_id(&state.db, factor_id, user_id).await?;
   let encrypted_secret = factor
     .secret
     .as_deref()
@@ -388,7 +388,13 @@ pub async fn verify_pending_totp(
   Ok(response)
 }
 
-pub async fn verified_factors_by_user_id(db: &PgPool, user_id: Uuid) -> Result<Vec<MfaFactorRow>> {
+pub(crate) fn requires_totp_challenge(factors: &[MfaFactorRow]) -> bool {
+  factors
+    .iter()
+    .any(|factor| factor.factor_type == "totp" && factor.status == "verified")
+}
+
+pub async fn verified_totp_factors_by_user_id(db: &PgPool, user_id: Uuid) -> Result<Vec<MfaFactorRow>> {
   let factors = sqlx::query_as::<_, MfaFactorRow>(
     "SELECT id, user_id, friendly_name, factor_type::text as factor_type, status::text as status, secret, created_at, updated_at, last_challenged_at FROM auth.mfa_factors WHERE user_id = $1 AND factor_type = 'totp'::auth.factor_type AND status = 'verified'::auth.factor_status ORDER BY created_at ASC",
   )
@@ -401,7 +407,7 @@ pub async fn verified_factors_by_user_id(db: &PgPool, user_id: Uuid) -> Result<V
 
 async fn factors_by_user_id(db: &PgPool, user_id: Uuid) -> Result<Vec<MfaFactorRow>> {
   let factors = sqlx::query_as::<_, MfaFactorRow>(
-    "SELECT id, user_id, friendly_name, factor_type::text as factor_type, status::text as status, secret, created_at, updated_at, last_challenged_at FROM auth.mfa_factors WHERE user_id = $1 AND factor_type = 'totp'::auth.factor_type ORDER BY created_at ASC",
+    "SELECT id, user_id, friendly_name, factor_type::text as factor_type, status::text as status, NULL::text AS secret, created_at, updated_at, last_challenged_at FROM auth.mfa_factors WHERE user_id = $1 AND factor_type IN ('totp'::auth.factor_type, 'webauthn'::auth.factor_type) ORDER BY created_at ASC, id ASC",
   )
   .bind(user_id)
   .fetch_all(db)
@@ -427,7 +433,7 @@ async fn ensure_unverified_factor_limit_not_reached(db: &PgPool, user_id: Uuid) 
   Ok(())
 }
 
-async fn factor_by_id(db: &PgPool, factor_id: Uuid, user_id: Uuid) -> Result<MfaFactorRow> {
+async fn totp_factor_by_id(db: &PgPool, factor_id: Uuid, user_id: Uuid) -> Result<MfaFactorRow> {
   sqlx::query_as::<_, MfaFactorRow>(
     "SELECT id, user_id, friendly_name, factor_type::text as factor_type, status::text as status, secret, created_at, updated_at, last_challenged_at FROM auth.mfa_factors WHERE id = $1 AND user_id = $2 AND factor_type = 'totp'::auth.factor_type",
   )
@@ -438,7 +444,7 @@ async fn factor_by_id(db: &PgPool, factor_id: Uuid, user_id: Uuid) -> Result<Mfa
   .ok_or(AuthError::UserNotFound)
 }
 
-async fn verified_factor_verify_state_by_id(
+async fn verified_totp_factor_verify_state_by_id(
   db: &PgPool,
   factor_id: Uuid,
   user_id: Uuid,
@@ -453,7 +459,7 @@ async fn verified_factor_verify_state_by_id(
   .ok_or(AuthError::NotAuthorized)
 }
 
-async fn factor_verify_state_by_id(
+async fn totp_factor_verify_state_by_id(
   db: &mut sqlx::PgConnection,
   factor_id: Uuid,
   user_id: Uuid,
@@ -525,7 +531,7 @@ fn ensure_pending_flow_valid(flow: &PendingFlowRow) -> Result<()> {
   Ok(())
 }
 
-async fn ensure_friendly_name_available(
+pub(crate) async fn ensure_friendly_name_available(
   db: &PgPool,
   user_id: Uuid,
   friendly_name: Option<&str>,
@@ -549,7 +555,7 @@ async fn ensure_friendly_name_available(
   Ok(())
 }
 
-fn normalize_friendly_name(value: Option<String>) -> Result<Option<String>> {
+pub(crate) fn normalize_friendly_name(value: Option<String>) -> Result<Option<String>> {
   match value {
     Some(name) => {
       let trimmed = name.trim().to_string();
@@ -647,6 +653,25 @@ mod tests {
       enrollment_verify_attempts: 0,
       last_enrollment_verify_attempt_at: None,
     }
+  }
+
+  #[test]
+  fn pending_mfa_requires_verified_totp_and_ignores_passkeys() {
+    let now = Utc::now();
+    let factor = |factor_type: &str, status: &str| MfaFactorRow {
+      id: Uuid::new_v4(),
+      user_id: Uuid::new_v4(),
+      friendly_name: None,
+      factor_type: factor_type.to_owned(),
+      status: status.to_owned(),
+      secret: None,
+      created_at: now,
+      updated_at: now,
+      last_challenged_at: None,
+    };
+    assert!(!requires_totp_challenge(&[factor("webauthn", "verified")]));
+    assert!(!requires_totp_challenge(&[factor("totp", "unverified")]));
+    assert!(requires_totp_challenge(&[factor("totp", "verified")]));
   }
 
   #[test]

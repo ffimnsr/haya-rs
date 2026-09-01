@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "crates/haya-passkey-rp"]
+resolver = "2"
+
 [package]
 name = "haya"
 version = "0.2.0"
@@ -13,6 +17,7 @@ readme = "README.md"
 exclude = [".gitignore"]
 
 [dependencies]
+haya-passkey-rp = { path = "crates/haya-passkey-rp" }
 dotenvy = "0.15"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -46,3 +51,8 @@ sd-notify = "0.5"
 
 [dev-dependencies]
 http-body-util = "0.1"
+passkey-authenticator = { version = "0.6", git = "https://github.com/1Password/passkey-rs", rev = "8a0635474a40d7e54d4ecbeab0979591ea60e17e", features = ["testable"] }
+passkey-client = { version = "0.6", git = "https://github.com/1Password/passkey-rs", rev = "8a0635474a40d7e54d4ecbeab0979591ea60e17e" }
+passkey-crypto = { version = "0.1", git = "https://github.com/1Password/passkey-rs", rev = "8a0635474a40d7e54d4ecbeab0979591ea60e17e", default-features = false, features = ["rust-crypto"] }
+passkey-types = { version = "0.6", git = "https://github.com/1Password/passkey-rs", rev = "8a0635474a40d7e54d4ecbeab0979591ea60e17e", features = ["serialize_bytes_as_base64_string"] }
+public-suffix = { version = "0.1", git = "https://github.com/1Password/passkey-rs", rev = "8a0635474a40d7e54d4ecbeab0979591ea60e17e" }

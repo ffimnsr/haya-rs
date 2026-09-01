@@ -75,8 +75,8 @@ async fn handle_recovery_verify(
   let user = consume_recovery_token(&state, &req.token, client_ip, Utc::now()).await?;
   session::ensure_user_is_active(&user)?;
 
-  let factors = mfa::verified_factors_by_user_id(&state.db, user.id).await?;
-  if !factors.is_empty() {
+  let factors = mfa::verified_totp_factors_by_user_id(&state.db, user.id).await?;
+  if mfa::requires_totp_challenge(&factors) {
     let pending = mfa::create_pending_login(&state, user.id, "recovery").await?;
     return Ok(Json(VerifyGrantResponse::PendingMfa(pending)));
   }
@@ -104,8 +104,8 @@ async fn handle_magiclink_verify(
   let user = consume_magic_link_token(&state, &req.token, client_ip, Utc::now()).await?;
   session::ensure_user_is_active(&user)?;
 
-  let factors = mfa::verified_factors_by_user_id(&state.db, user.id).await?;
-  if !factors.is_empty() {
+  let factors = mfa::verified_totp_factors_by_user_id(&state.db, user.id).await?;
+  if mfa::requires_totp_challenge(&factors) {
     let pending = mfa::create_pending_login(&state, user.id, "magiclink").await?;
     return Ok(Json(VerifyGrantResponse::PendingMfa(pending)));
   }

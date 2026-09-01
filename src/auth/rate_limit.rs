@@ -17,6 +17,41 @@ pub async fn record_attempt(db: &PgPool, key: &str, window_secs: i64) -> Result<
   upsert_attempt_window(db, key, window_secs).await
 }
 
+pub async fn check_and_record(db: &PgPool, key: &str, max_attempts: u32, window_secs: i64) -> Result<bool> {
+  let recorded: Option<i32> = sqlx::query_scalar(
+    "INSERT INTO auth.rate_limits (key, attempts, expires_at, created_at, updated_at)
+     VALUES ($1, 1, NOW() + make_interval(secs => $3), NOW(), NOW())
+     ON CONFLICT (key) DO UPDATE SET
+       attempts = CASE
+         WHEN auth.rate_limits.expires_at <= NOW() THEN 1
+         ELSE auth.rate_limits.attempts + 1
+       END,
+       expires_at = CASE
+         WHEN auth.rate_limits.expires_at <= NOW() THEN NOW() + make_interval(secs => $3)
+         ELSE auth.rate_limits.expires_at
+       END,
+       updated_at = NOW()
+     WHERE auth.rate_limits.expires_at <= NOW() OR auth.rate_limits.attempts < $2
+     RETURNING attempts",
+  )
+  .bind(key)
+  .bind(i32::try_from(max_attempts).unwrap_or(i32::MAX))
+  .bind(window_secs)
+  .fetch_optional(db)
+  .await?;
+  Ok(recorded.is_none())
+}
+
+pub async fn release_attempt(db: &PgPool, key: &str) -> Result<()> {
+  sqlx::query(
+    "UPDATE auth.rate_limits SET attempts = GREATEST(attempts - 1, 0), updated_at = NOW() WHERE key = $1",
+  )
+  .bind(key)
+  .execute(db)
+  .await?;
+  Ok(())
+}
+
 pub async fn record_failure(db: &PgPool, key: &str, window_secs: i64) -> Result<()> {
   upsert_attempt_window(db, key, window_secs).await
 }

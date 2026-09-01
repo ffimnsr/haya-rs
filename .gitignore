@@ -4,3 +4,6 @@
 !.env.example
 *.md
 !README.md
+!ISSUES.md
+/.atlas
+/.zed

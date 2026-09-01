@@ -125,3 +125,11 @@ tasks:
           --keep-only 'src/*' \
           -o coverage/tests.lcov
     description: Generate lcov coverage report
+  lf:
+    commands:
+      - |
+        git ls-files -z --cached --others --exclude-standard -- '*.rs' ':(exclude)test_assets/**' \
+        | xargs -0 -I{} sh -c '[ -f "$1" ] && wc -l -- "$1"' sh {} \
+        | awk '$1 > 1000' \
+        | sort -nr
+    description: Check for Rust files with more than 1000 LOC.

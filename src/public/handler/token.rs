@@ -1,4 +1,5 @@
 use axum::Json;
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{
   ConnectInfo,
   Query,
@@ -32,6 +33,7 @@ use crate::model::{
 };
 use crate::public::handler::{
   mfa,
+  passkey,
   sso,
 };
 use crate::state::AppState;
@@ -51,9 +53,16 @@ pub async fn token(
   ConnectInfo(client_addr): ConnectInfo<SocketAddr>,
   Query(query): Query<TokenQuery>,
   headers: HeaderMap,
-  Json(body): Json<serde_json::Value>,
+  body: std::result::Result<Json<serde_json::Value>, JsonRejection>,
 ) -> Result<Json<TokenGrantResponse>> {
   let client_ip = client_addr.ip();
+  let body = match body {
+    Ok(Json(body)) => body,
+    Err(_) if query.grant_type == "passkey" => {
+      return Err(passkey::malformed_authentication_error(&state, client_ip, None).await?);
+    },
+    Err(_) => return Err(AuthError::ValidationFailed("Invalid JSON body".to_owned())),
+  };
   match query.grant_type.as_str() {
     "password" => handle_password_grant(state, client_ip, user_agent_from_headers(&headers), body)
       .await
@@ -64,6 +73,21 @@ pub async fn token(
     "mfa_totp" => handle_mfa_totp_grant(state, headers, client_ip, body)
       .await
       .map(|response| Json(TokenGrantResponse::Token(Box::new(response)))),
+    "passkey" => {
+      let flow_id = body
+        .get("flowId")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| value.parse().ok());
+      let request: passkey::PasskeyTokenGrantRequest = match serde_json::from_value(body) {
+        Ok(request) => request,
+        Err(_) => {
+          return Err(passkey::malformed_authentication_error(&state, client_ip, flow_id).await?);
+        },
+      };
+      passkey::complete_authentication(state, client_ip, user_agent_from_headers(&headers), request)
+        .await
+        .map(|response| Json(TokenGrantResponse::Token(Box::new(response))))
+    },
     "oidc_callback" => sso::exchange_callback_code(state, client_ip, body)
       .await
       .map(Json),
@@ -261,8 +285,8 @@ async fn handle_password_grant(
   rate_limit::clear(&state.db, &rate_limit_key).await?;
   rate_limit::clear(&state.db, &ip_rate_limit_key).await?;
 
-  let factors = mfa::verified_factors_by_user_id(&state.db, user.id).await?;
-  if !factors.is_empty() {
+  let factors = mfa::verified_totp_factors_by_user_id(&state.db, user.id).await?;
+  if mfa::requires_totp_challenge(&factors) {
     let pending = mfa::create_pending_login(&state, user.id, "password").await?;
     audit::log_event(
       &state.db,

@@ -2,6 +2,8 @@ pub mod audit;
 pub mod jwt;
 pub mod mfa;
 pub mod oidc;
+pub(crate) mod passkey_management_repository;
+pub(crate) mod passkey_repository;
 pub mod password;
 pub mod rate_limit;
 pub mod session;

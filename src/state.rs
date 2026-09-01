@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use haya_passkey_rp::PasskeyRp;
 use sqlx::PgPool;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -32,6 +33,8 @@ pub struct AppState {
   pub mailer_autoconfirm: bool,
   /// SMTP mailer; `None` when `SMTP_HOST` is not configured
   pub mailer: Option<Arc<Mailer>>,
+  /// Validated WebAuthn relying party; `None` when passkeys are disabled.
+  pub passkey: Option<Arc<PasskeyRp>>,
 }
 
 #[derive(Debug, Clone)]

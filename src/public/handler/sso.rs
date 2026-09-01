@@ -227,9 +227,9 @@ async fn handle_callback(
   oidc::enforce_allowed_domains(&provider, &profile)?;
   let user = provision_sso_user(&state, &provider, &profile).await?;
   ensure_user_signin_allowed(&user)?;
-  let factors = mfa::verified_factors_by_user_id(&state.db, user.id).await?;
+  let factors = mfa::verified_totp_factors_by_user_id(&state.db, user.id).await?;
 
-  if !factors.is_empty() {
+  if mfa::requires_totp_challenge(&factors) {
     let pending = mfa::create_pending_login(&state, user.id, "oidc").await?;
     let exchange_code = persist_oidc_result(&state, TokenGrantResponse::PendingMfa(pending)).await?;
     audit::log_event(

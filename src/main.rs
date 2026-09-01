@@ -15,6 +15,10 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use clap::Parser;
+use haya_passkey_rp::{
+  PasskeyConfig,
+  PasskeyRp,
+};
 use rand::RngCore;
 use tokio::sync::RwLock;
 
@@ -53,6 +57,7 @@ struct RuntimeBootstrap {
   mfa_encryption_key: [u8; 32],
   instance_id: Uuid,
   mailer: Option<Arc<Mailer>>,
+  passkey: Option<Arc<PasskeyRp>>,
 }
 
 #[tokio::main]
@@ -136,6 +141,40 @@ fn env_flag_enabled(name: &str) -> bool {
       value == "1" || value.eq_ignore_ascii_case("true")
     })
     .unwrap_or(false)
+}
+
+fn build_passkey(
+  enabled: bool,
+  rp_id: Option<String>,
+  rp_name: String,
+  origin_values: Vec<String>,
+  challenge_ttl_secs: i64,
+  allow_insecure_localhost: bool,
+) -> anyhow::Result<Option<Arc<PasskeyRp>>> {
+  if !enabled {
+    return Ok(None);
+  }
+
+  let rp_id = rp_id
+    .filter(|value| !value.trim().is_empty())
+    .ok_or_else(|| anyhow::anyhow!("PASSKEY_RP_ID is required when passkeys are enabled"))?;
+  if origin_values.is_empty() {
+    anyhow::bail!("PASSKEY_RP_ORIGINS must contain at least one origin when passkeys are enabled");
+  }
+  let origins = origin_values
+    .into_iter()
+    .map(|value| {
+      Url::parse(&value).map_err(|error| anyhow::anyhow!("invalid passkey origin {value:?}: {error}"))
+    })
+    .collect::<anyhow::Result<Vec<_>>>()?;
+  let rp = PasskeyRp::new(PasskeyConfig {
+    rp_id,
+    rp_name,
+    origins,
+    challenge_ttl_secs,
+    allow_insecure_localhost,
+  })?;
+  Ok(Some(Arc::new(rp)))
 }
 
 fn build_runtime_bootstrap(require_database: bool) -> anyhow::Result<RuntimeBootstrap> {
@@ -222,6 +261,28 @@ fn build_runtime_bootstrap(require_database: bool) -> anyhow::Result<RuntimeBoot
   allowed_redirect_origins.sort();
   allowed_redirect_origins.dedup();
   let site_name = env::var("SITE_NAME").unwrap_or_else(|_| "Haya".to_string());
+  let passkey_enabled = env_flag_enabled("PASSKEY_ENABLED");
+  let passkey_challenge_ttl_secs = if passkey_enabled {
+    env::var("PASSKEY_CHALLENGE_TTL_SECS")
+      .ok()
+      .map(|value| {
+        value
+          .parse::<i64>()
+          .map_err(|error| anyhow::anyhow!("PASSKEY_CHALLENGE_TTL_SECS must be an integer: {error}"))
+      })
+      .transpose()?
+      .unwrap_or(300)
+  } else {
+    300
+  };
+  let passkey = build_passkey(
+    passkey_enabled,
+    env::var("PASSKEY_RP_ID").ok(),
+    env::var("PASSKEY_RP_NAME").unwrap_or_else(|_| site_name.clone()),
+    parse_origin_list_env("PASSKEY_RP_ORIGINS"),
+    passkey_challenge_ttl_secs,
+    dev_mode,
+  )?;
   let issuer = env::var("GOTRUE_JWT_ISSUER")
     .or_else(|_| env::var("JWT_ISSUER"))
     .unwrap_or_else(|_| site_url.clone());
@@ -307,6 +368,7 @@ fn build_runtime_bootstrap(require_database: bool) -> anyhow::Result<RuntimeBoot
     mfa_encryption_key,
     instance_id,
     mailer,
+    passkey,
   })
 }
 
@@ -314,7 +376,7 @@ async fn build_app_state(bootstrap: &RuntimeBootstrap) -> anyhow::Result<AppStat
   let db = db::init_pool(&bootstrap.config.database_url).await?;
   let oidc_providers = oidc::load_providers_from_db(&db).await?;
 
-  Ok(AppState {
+  let state = AppState {
     db,
     http_client: bootstrap.http_client.clone(),
     jwt_secret: bootstrap.jwt_secret.clone(),
@@ -333,5 +395,83 @@ async fn build_app_state(bootstrap: &RuntimeBootstrap) -> anyhow::Result<AppStat
     oidc_jwks_cache: Arc::new(RwLock::new(std::collections::HashMap::new())),
     mailer_autoconfirm: bootstrap.config.mailer_autoconfirm,
     mailer: bootstrap.mailer.clone(),
-  })
+    passkey: bootstrap.passkey.clone(),
+  };
+  if state.passkey.is_some() {
+    tracing::info!("Passkey relying party is enabled");
+  }
+  Ok(state)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn disabled_passkeys_require_no_rp_settings() {
+    assert!(
+      build_passkey(false, None, String::new(), Vec::new(), 300, false)
+        .unwrap()
+        .is_none()
+    );
+  }
+
+  #[test]
+  fn enabled_passkeys_require_an_rp_id() {
+    let error = build_passkey(
+      true,
+      None,
+      "Haya".to_owned(),
+      vec!["https://example.com".to_owned()],
+      300,
+      false,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("PASSKEY_RP_ID"));
+  }
+
+  #[test]
+  fn enabled_passkeys_require_origins() {
+    let error = build_passkey(
+      true,
+      Some("example.com".to_owned()),
+      "Haya".to_owned(),
+      Vec::new(),
+      300,
+      false,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("PASSKEY_RP_ORIGINS"));
+  }
+
+  #[test]
+  fn enabled_passkeys_construct_a_validated_rp() {
+    let passkey = build_passkey(
+      true,
+      Some("example.com".to_owned()),
+      "Haya".to_owned(),
+      vec!["https://app.example.com".to_owned()],
+      300,
+      false,
+    )
+    .unwrap();
+    assert!(passkey.is_some());
+  }
+
+  #[test]
+  fn enabled_passkeys_reject_invalid_complete_settings() {
+    for (origin, ttl) in [("https://example.net", 300), ("https://example.com", 59)] {
+      assert!(
+        build_passkey(
+          true,
+          Some("example.com".to_owned()),
+          "Haya".to_owned(),
+          vec![origin.to_owned()],
+          ttl,
+          false,
+        )
+        .is_err()
+      );
+    }
+  }
 }

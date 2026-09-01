@@ -1,0 +1,20 @@
+[package]
+name = "haya-passkey-rp"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+# passkey-crypto 0.1 is not published on crates.io, so both 1Password crates
+# are pinned to one reviewed upstream workspace revision.
+passkey-types = { version = "0.6", git = "https://github.com/1Password/passkey-rs", rev = "8a0635474a40d7e54d4ecbeab0979591ea60e17e", features = ["serialize_bytes_as_base64_string"] }
+passkey-crypto = { version = "0.1", git = "https://github.com/1Password/passkey-rs", rev = "8a0635474a40d7e54d4ecbeab0979591ea60e17e", default-features = false, features = ["rust-crypto"] }
+p256 = { version = "0.14", features = ["ecdsa"] }
+ciborium = "0.2"
+rand = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+subtle = "2"
+thiserror = "2"
+url = { version = "2", features = ["serde"] }

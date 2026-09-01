@@ -35,19 +35,28 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Install Rust toolchain
+      - name: Install stable Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: clippy
+
+      - name: Install nightly rustfmt
+        run: rustup toolchain install nightly --profile minimal --component rustfmt
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: cargo +nightly fmt --all -- --check
 
-      - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Test release script
+        run: bash scripts/release_test.sh
 
-      - name: Run unit tests
-        run: cargo test --bins
+      - name: Test passkey RP package
+        run: cargo test --quiet --package haya-passkey-rp
+
+      - name: Test Haya package
+        run: cargo test --quiet --package haya
+
+      - name: Run strict workspace clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings

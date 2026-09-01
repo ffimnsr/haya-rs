@@ -3,6 +3,8 @@ pub mod health;
 pub mod logout;
 pub mod mfa;
 pub mod otp;
+pub mod passkey;
+pub mod passkey_management;
 pub mod reauthenticate;
 pub mod recover;
 pub mod resend;

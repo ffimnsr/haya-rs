@@ -36,6 +36,14 @@ pub enum AuthError {
   UserBanned,
   #[error("Too many requests")]
   TooManyRequests,
+  #[error("Passkeys are not enabled")]
+  PasskeyDisabled,
+  #[allow(dead_code)]
+  #[error("Passkey registration failed")]
+  PasskeyRegistrationFailed,
+  #[allow(dead_code)]
+  #[error("Passkey authentication failed")]
+  PasskeyAuthenticationFailed,
   #[error("Database error: {0}")]
   DatabaseError(#[from] sqlx::Error),
   #[error("Internal error: {0}")]
@@ -43,6 +51,16 @@ pub enum AuthError {
 }
 
 impl AuthError {
+  #[allow(dead_code)]
+  pub fn from_passkey_registration_error(_: haya_passkey_rp::RpError) -> Self {
+    Self::PasskeyRegistrationFailed
+  }
+
+  #[allow(dead_code)]
+  pub fn from_passkey_authentication_error(_: haya_passkey_rp::RpError) -> Self {
+    Self::PasskeyAuthenticationFailed
+  }
+
   fn status_code(&self) -> StatusCode {
     match self {
       AuthError::InvalidCredentials => StatusCode::UNAUTHORIZED,
@@ -57,6 +75,10 @@ impl AuthError {
       AuthError::NotAdmin => StatusCode::FORBIDDEN,
       AuthError::UserBanned => StatusCode::FORBIDDEN,
       AuthError::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
+      AuthError::PasskeyDisabled => StatusCode::NOT_FOUND,
+      AuthError::PasskeyRegistrationFailed | AuthError::PasskeyAuthenticationFailed => {
+        StatusCode::BAD_REQUEST
+      },
       AuthError::DatabaseError(_) => StatusCode::INTERNAL_SERVER_ERROR,
       AuthError::InternalError(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -76,6 +98,9 @@ impl AuthError {
       AuthError::NotAdmin => "not_admin",
       AuthError::UserBanned => "user_banned",
       AuthError::TooManyRequests => "too_many_requests",
+      AuthError::PasskeyDisabled => "passkey_not_enabled",
+      AuthError::PasskeyRegistrationFailed => "passkey_registration_failed",
+      AuthError::PasskeyAuthenticationFailed => "passkey_authentication_failed",
       AuthError::DatabaseError(_) => "unexpected_failure",
       AuthError::InternalError(_) => "unexpected_failure",
     }
@@ -110,6 +135,38 @@ impl IntoResponse for AuthError {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use haya_passkey_rp::RpError;
+  use http_body_util::BodyExt;
+
+  fn rp_errors() -> Vec<RpError> {
+    vec![
+      RpError::InvalidRpId,
+      RpError::EmptyRpName,
+      RpError::EmptyOrigins,
+      RpError::InvalidOrigin("https://internal.example".into()),
+      RpError::InvalidChallengeTtl,
+      RpError::InvalidUserHandle,
+      RpError::InvalidClientData,
+      RpError::InvalidAuthenticatorData,
+      RpError::InvalidAttestation,
+      RpError::InvalidCredential,
+      RpError::InvalidSignature,
+      RpError::SignatureCounterRollback,
+    ]
+  }
+
+  async fn response_status_and_body(error: AuthError) -> (StatusCode, serde_json::Value) {
+    let response = error.into_response();
+    let status = response.status();
+    let body = response
+      .into_body()
+      .collect()
+      .await
+      .expect("error response body should be readable")
+      .to_bytes();
+    let body = serde_json::from_slice(&body).expect("error response body should be valid JSON");
+    (status, body)
+  }
 
   #[test]
   fn test_error_codes() {
@@ -128,6 +185,15 @@ mod tests {
     assert_eq!(AuthError::NotAdmin.error_code(), "not_admin");
     assert_eq!(AuthError::UserBanned.error_code(), "user_banned");
     assert_eq!(AuthError::TooManyRequests.error_code(), "too_many_requests");
+    assert_eq!(AuthError::PasskeyDisabled.error_code(), "passkey_not_enabled");
+    assert_eq!(
+      AuthError::PasskeyRegistrationFailed.error_code(),
+      "passkey_registration_failed"
+    );
+    assert_eq!(
+      AuthError::PasskeyAuthenticationFailed.error_code(),
+      "passkey_authentication_failed"
+    );
     assert_eq!(
       AuthError::InternalError("oops".into()).error_code(),
       "unexpected_failure"
@@ -163,10 +229,53 @@ mod tests {
       AuthError::TooManyRequests.status_code(),
       StatusCode::TOO_MANY_REQUESTS
     );
+    assert_eq!(AuthError::PasskeyDisabled.status_code(), StatusCode::NOT_FOUND);
+    assert_eq!(
+      AuthError::PasskeyRegistrationFailed.status_code(),
+      StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+      AuthError::PasskeyAuthenticationFailed.status_code(),
+      StatusCode::BAD_REQUEST
+    );
     assert_eq!(
       AuthError::InternalError("".into()).status_code(),
       StatusCode::INTERNAL_SERVER_ERROR
     );
+  }
+
+  #[tokio::test]
+  async fn registration_rp_errors_have_identical_public_response() {
+    let expected = (
+      StatusCode::BAD_REQUEST,
+      json!({
+        "code": 400,
+        "error_code": "passkey_registration_failed",
+        "msg": "Passkey registration failed",
+      }),
+    );
+
+    for error in rp_errors() {
+      let response = response_status_and_body(AuthError::from_passkey_registration_error(error)).await;
+      assert_eq!(response, expected);
+    }
+  }
+
+  #[tokio::test]
+  async fn authentication_rp_errors_have_identical_public_response() {
+    let expected = (
+      StatusCode::BAD_REQUEST,
+      json!({
+        "code": 400,
+        "error_code": "passkey_authentication_failed",
+        "msg": "Passkey authentication failed",
+      }),
+    );
+
+    for error in rp_errors() {
+      let response = response_status_and_body(AuthError::from_passkey_authentication_error(error)).await;
+      assert_eq!(response, expected);
+    }
   }
 
   #[test]

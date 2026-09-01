@@ -20,7 +20,6 @@ use crate::error::{
 };
 use crate::mailer::EmailKind;
 use crate::model::{
-  MfaFactorRow,
   SessionAmrClaimRow,
   SessionRow,
   TokenResponse,
@@ -38,6 +37,14 @@ const REAUTHENTICATION_RATE_LIMIT_ATTEMPTS: u32 = 10;
 pub struct ClientContext {
   pub user_agent: Option<String>,
   pub ip: Option<IpAddr>,
+}
+
+#[derive(Debug)]
+pub(crate) struct IssuedSession {
+  session_id: Uuid,
+  aal: String,
+  amr: Vec<jwt::AmrEntry>,
+  refresh_token: String,
 }
 
 pub async fn issue_session(state: &AppState, user: &User, method: &str) -> Result<TokenResponse> {
@@ -87,9 +94,24 @@ pub async fn issue_session_with_client_context(
   methods: Vec<String>,
   client_context: ClientContext,
 ) -> Result<TokenResponse> {
+  let mut tx = state.db.begin().await?;
+  let issued =
+    issue_session_in_transaction(state, &mut tx, user, aal, factor_id, methods, client_context).await?;
+  tx.commit().await?;
+  build_issued_session_response(state, user, issued).await
+}
+
+pub(crate) async fn issue_session_in_transaction(
+  state: &AppState,
+  tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+  user: &User,
+  aal: &str,
+  factor_id: Option<Uuid>,
+  methods: Vec<String>,
+  client_context: ClientContext,
+) -> Result<IssuedSession> {
   let now = Utc::now();
   let session_id = Uuid::new_v4();
-  let mut tx = state.db.begin().await?;
 
   sqlx::query(
     "INSERT INTO auth.sessions (id, user_id, factor_id, aal, user_agent, ip, refreshed_at, created_at, updated_at) VALUES ($1, $2, $3, $4::auth.aal_level, $5, $6::inet, $7, $8, $9)",
@@ -103,7 +125,7 @@ pub async fn issue_session_with_client_context(
   .bind(now.naive_utc())
   .bind(now)
   .bind(now)
-  .execute(&mut *tx)
+  .execute(tx.as_mut())
   .await?;
 
   for method in &methods {
@@ -115,7 +137,7 @@ pub async fn issue_session_with_client_context(
     .bind(now)
     .bind(now)
     .bind(method)
-    .execute(&mut *tx)
+    .execute(tx.as_mut())
     .await?;
   }
 
@@ -130,17 +152,15 @@ pub async fn issue_session_with_client_context(
   .bind(session_id)
   .bind(now)
   .bind(now)
-  .execute(&mut *tx)
+  .execute(tx.as_mut())
   .await?;
 
   sqlx::query("UPDATE auth.users SET last_sign_in_at = $1, updated_at = $2 WHERE id = $3")
     .bind(now)
     .bind(now)
     .bind(user.id)
-    .execute(&mut *tx)
+    .execute(tx.as_mut())
     .await?;
-
-  tx.commit().await?;
 
   let amr = methods
     .into_iter()
@@ -150,7 +170,38 @@ pub async fn issue_session_with_client_context(
     })
     .collect();
 
-  build_token_response(state, user, session_id, aal, amr, refresh_token).await
+  Ok(IssuedSession {
+    session_id,
+    aal: aal.to_owned(),
+    amr,
+    refresh_token,
+  })
+}
+
+pub(crate) async fn build_issued_session_response(
+  state: &AppState,
+  user: &User,
+  issued: IssuedSession,
+) -> Result<TokenResponse> {
+  let user_response = UserResponse::from_user(&state.db, user.clone()).await?;
+  build_issued_session_response_with_user(state, user, user_response, issued)
+}
+
+pub(crate) fn build_issued_session_response_with_user(
+  state: &AppState,
+  user: &User,
+  user_response: UserResponse,
+  issued: IssuedSession,
+) -> Result<TokenResponse> {
+  build_token_response_with_user(
+    state,
+    user,
+    user_response,
+    issued.session_id,
+    &issued.aal,
+    issued.amr,
+    issued.refresh_token,
+  )
 }
 
 pub fn generate_refresh_token() -> String {
@@ -162,6 +213,19 @@ pub fn generate_refresh_token() -> String {
 pub async fn build_token_response(
   state: &AppState,
   user: &User,
+  session_id: Uuid,
+  aal: &str,
+  amr: Vec<jwt::AmrEntry>,
+  refresh_token: String,
+) -> Result<TokenResponse> {
+  let user_response = UserResponse::from_user(&state.db, user.clone()).await?;
+  build_token_response_with_user(state, user, user_response, session_id, aal, amr, refresh_token)
+}
+
+fn build_token_response_with_user(
+  state: &AppState,
+  user: &User,
+  user_response: UserResponse,
   session_id: Uuid,
   aal: &str,
   amr: Vec<jwt::AmrEntry>,
@@ -188,7 +252,6 @@ pub async fn build_token_response(
   })?;
 
   let expires_at = now.timestamp() + state.jwt_exp;
-  let user_response = UserResponse::from_user(&state.db, user.clone()).await?;
   Ok(TokenResponse {
     access_token,
     token_type: "bearer".to_string(),
@@ -304,16 +367,8 @@ pub async fn require_reauthentication(
   current_password: Option<&str>,
   reauthentication_token: Option<&str>,
 ) -> Result<()> {
-  let has_verified_mfa = sqlx::query_as::<_, MfaFactorRow>(
-    "SELECT id, user_id, friendly_name, factor_type::text as factor_type, status::text as status, secret, created_at, updated_at, last_challenged_at FROM auth.mfa_factors WHERE user_id = $1 AND status = 'verified'::auth.factor_status LIMIT 1",
-  )
-  .bind(user.id)
-  .fetch_optional(&state.db)
-  .await?
-  .is_some();
-
-  if has_verified_mfa && claims.aal != "aal2" {
-    return Err(AuthError::NotAuthorized);
+  if claims.aal == "aal2" {
+    return Ok(());
   }
 
   if let Some(token) = reauthentication_token
@@ -370,11 +425,7 @@ pub async fn require_reauthentication(
     return Ok(());
   }
 
-  if !has_verified_mfa {
-    return Err(AuthError::NotAuthorized);
-  }
-
-  Ok(())
+  Err(AuthError::NotAuthorized)
 }
 
 fn reauthentication_token_rate_limit_key(user_id: Uuid, client_ip: IpAddr) -> String {
@@ -483,6 +534,7 @@ mod tests {
       oidc_jwks_cache: Arc::new(RwLock::new(HashMap::new())),
       mailer_autoconfirm: false,
       mailer: None,
+      passkey: None,
     }
   }
 

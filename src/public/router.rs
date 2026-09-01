@@ -104,6 +104,23 @@ pub fn create_router(state: AppState) -> Router {
     .route("/resend", post(handler::resend::resend))
     .route("/magiclink", post(handler::otp::magiclink))
     .route("/otp", post(handler::otp::send_otp))
+    .route("/passkeys", get(handler::passkey_management::list_passkeys))
+    .route(
+      "/passkeys/{id}",
+      axum::routing::delete(handler::passkey_management::delete_passkey),
+    )
+    .route(
+      "/passkeys/authenticate/options",
+      post(handler::passkey::authentication_options),
+    )
+    .route(
+      "/passkeys/register/options",
+      post(handler::passkey::registration_options),
+    )
+    .route(
+      "/passkeys/register/verify",
+      post(handler::passkey::registration_verify),
+    )
     .route(
       "/factors",
       get(handler::mfa::list_factors).post(handler::mfa::create_totp_factor),

@@ -80,7 +80,28 @@ pub struct UserResponse {
 
 impl UserResponse {
   pub async fn from_user(db: &PgPool, u: User) -> Result<Self> {
-    Ok(Self {
+    let identities = fetch_identity_values(db, u.id).await?;
+    Ok(Self::from_user_with_identities(u, identities))
+  }
+
+  pub(crate) async fn from_user_in_transaction(db: &mut sqlx::PgConnection, u: User) -> Result<Self> {
+    let identities: Vec<Identity> = sqlx::query_as::<_, Identity>(
+      "SELECT id, provider_id, user_id, identity_data, provider, last_sign_in_at, email, created_at, updated_at FROM auth.identities WHERE user_id = $1 ORDER BY created_at ASC",
+    )
+    .bind(u.id)
+    .fetch_all(db)
+    .await?;
+    Ok(Self::from_user_with_identities(
+      u,
+      identities
+        .into_iter()
+        .map(|identity| identity.as_response_value())
+        .collect(),
+    ))
+  }
+
+  fn from_user_with_identities(u: User, identities: Vec<Value>) -> Self {
+    Self {
       id: u.id,
       instance_id: u.instance_id,
       aud: u.aud.unwrap_or_else(|| "authenticated".to_string()),
@@ -93,7 +114,7 @@ impl UserResponse {
       last_sign_in_at: u.last_sign_in_at,
       app_metadata: u.raw_app_meta_data.unwrap_or(serde_json::json!({})),
       user_metadata: u.raw_user_meta_data.unwrap_or(serde_json::json!({})),
-      identities: fetch_identity_values(db, u.id).await?,
+      identities,
       is_super_admin: u.is_super_admin.unwrap_or(false),
       is_sso_user: u.is_sso_user,
       banned_until: u.banned_until,
@@ -101,7 +122,7 @@ impl UserResponse {
       created_at: u.created_at,
       updated_at: u.updated_at,
       is_anonymous: u.is_anonymous,
-    })
+    }
   }
 }
 
