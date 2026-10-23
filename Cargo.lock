@@ -1149,7 +1149,7 @@ dependencies = [
 
 [[package]]
 name = "haya"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1190,7 +1190,7 @@ dependencies = [
 
 [[package]]
 name = "haya-passkey-rp"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "ciborium",
  "p256",

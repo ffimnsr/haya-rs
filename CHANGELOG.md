@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.2 - 2026-10-23
+
+### Fixes
+
+- stop Separated chaining from injecting comma before bind placeholders (`dddbb73`)
+
+
 ## 0.3.1 - 2026-10-23
 
 ### Features
