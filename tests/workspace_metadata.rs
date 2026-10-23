@@ -18,7 +18,7 @@ fn workspace_contains_haya_and_passkey_rp_packages() {
   let members = metadata["workspace_members"]
     .as_array()
     .expect("workspace_members array");
-  for package in ["haya@0.2.0", "haya-passkey-rp#0.1.0"] {
+  for package in ["haya@0.3.0", "haya-passkey-rp#0.3.0"] {
     assert!(
       members
         .iter()
