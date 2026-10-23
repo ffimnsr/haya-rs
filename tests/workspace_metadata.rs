@@ -18,12 +18,24 @@ fn workspace_contains_haya_and_passkey_rp_packages() {
   let members = metadata["workspace_members"]
     .as_array()
     .expect("workspace_members array");
-  for package in ["haya@0.3.0", "haya-passkey-rp#0.3.0"] {
+  let packages = metadata["packages"].as_array().expect("packages array");
+  let expected_version = env!("CARGO_PKG_VERSION");
+
+  for package_name in ["haya", "haya-passkey-rp"] {
+    let package = packages
+      .iter()
+      .find(|package| package["name"].as_str() == Some(package_name))
+      .unwrap_or_else(|| panic!("workspace package {package_name} not found"));
+
     assert!(
-      members
-        .iter()
-        .any(|member| member.as_str().is_some_and(|member| member.contains(package))),
-      "workspace member {package} not found in {members:?}"
+      members.contains(&package["id"]),
+      "workspace member {package_name} ({}) not found in {members:?}",
+      package["id"]
+    );
+    assert_eq!(
+      package["version"].as_str(),
+      Some(expected_version),
+      "workspace package {package_name} must use the root package version"
     );
   }
 }

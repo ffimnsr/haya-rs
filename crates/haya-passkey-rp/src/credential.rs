@@ -131,10 +131,7 @@ fn value_as_i64(value: &ciborium::Value) -> Option<i64> {
 #[cfg(test)]
 mod tests {
   use p256::ecdsa::SigningKey;
-  use passkey_crypto::coset::{
-    CborSerializable as _,
-    CoseKeyBuilder,
-  };
+  use passkey_crypto::coset::CoseKeyBuilder;
 
   use super::*;
 

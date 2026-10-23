@@ -5,6 +5,7 @@ use axum::extract::DefaultBodyLimit;
 use axum::http::{
   HeaderValue,
   Method,
+  StatusCode,
 };
 use axum::routing::{
   get,
@@ -151,5 +152,8 @@ pub fn create_router(state: AppState) -> Router {
     .layer(DefaultBodyLimit::max(1024 * 1024))
     .layer(build_cors_layer())
     .layer(TraceLayer::new_for_http())
-    .layer(TimeoutLayer::new(Duration::from_secs(30)))
+    .layer(TimeoutLayer::with_status_code(
+      StatusCode::REQUEST_TIMEOUT,
+      Duration::from_secs(30),
+    ))
 }

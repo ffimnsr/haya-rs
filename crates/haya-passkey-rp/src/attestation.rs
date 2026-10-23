@@ -153,10 +153,7 @@ mod tests {
     CborSerializable as _,
     CoseKeyBuilder,
   };
-  use passkey_crypto::{
-    PublicKeyT as _,
-    iana,
-  };
+  use passkey_crypto::iana;
   use passkey_types::Bytes;
   use passkey_types::ctap2::Flags;
   use passkey_types::webauthn::{

@@ -65,7 +65,6 @@ pub(crate) fn validate<'a>(
 #[cfg(test)]
 mod tests {
   use passkey_crypto::AvailableSha2;
-  use passkey_crypto::hash::Sha256Backend as _;
 
   use super::*;
 
