@@ -1,0 +1,11 @@
+.git
+.github
+target
+benches
+tests
+examples
+contrib
+certs
+.env
+.env.*
+*.log
