@@ -6,6 +6,9 @@ readonly RELEASE_MANIFEST="Cargo.toml"
 readonly CHANGELOG_FILE="CHANGELOG.md"
 readonly REMOTE_NAME="origin"
 
+RELEASE_BACKUP_DIR=""
+RELEASE_COMMITTED=0
+
 usage() {
   cat <<'EOF'
 Usage: scripts/release.sh [options] [<version>]
@@ -166,6 +169,65 @@ stage_workspace_manifests() {
   while IFS= read -r member; do
     manifest="${member%/}/Cargo.toml"
     git add "$manifest"
+  done < <(workspace_manifests)
+}
+
+backup_release_file() {
+  local file="$1"
+  local backup="$RELEASE_BACKUP_DIR/$file"
+
+  mkdir -p "$(dirname "$backup")"
+  if [[ -f "$file" ]]; then
+    cp -p -- "$file" "$backup"
+  else
+    : >"$backup.absent"
+  fi
+  printf '%s\n' "$file" >>"$RELEASE_BACKUP_DIR/files.list"
+}
+
+restore_release_file() {
+  local file="$1"
+  local backup="$RELEASE_BACKUP_DIR/$file"
+
+  if [[ -f "$backup.absent" ]]; then
+    rm -f -- "$file"
+  else
+    mkdir -p "$(dirname "$file")"
+    cp -p -- "$backup" "$file"
+  fi
+}
+
+restore_release_state() {
+  local file
+
+  [[ -n "$RELEASE_BACKUP_DIR" ]] || return 0
+  if ((RELEASE_COMMITTED == 0)) && [[ -f "$RELEASE_BACKUP_DIR/files.list" ]]; then
+    while IFS= read -r file; do
+      restore_release_file "$file"
+    done <"$RELEASE_BACKUP_DIR/files.list"
+  fi
+  rm -rf "$RELEASE_BACKUP_DIR"
+  RELEASE_BACKUP_DIR=""
+}
+
+on_release_exit() {
+  if [[ -n "$RELEASE_BACKUP_DIR" ]] && ((RELEASE_COMMITTED == 0)); then
+    # Drop staged release files before restoring the worktree.
+    git reset --quiet HEAD -- >/dev/null 2>&1 || true
+  fi
+  restore_release_state
+}
+
+backup_release_state() {
+  local member
+
+  RELEASE_BACKUP_DIR="$(mktemp -d)"
+  RELEASE_COMMITTED=0
+  trap on_release_exit EXIT
+  backup_release_file "Cargo.lock"
+  backup_release_file "$CHANGELOG_FILE"
+  while IFS= read -r member; do
+    backup_release_file "${member%/}/Cargo.toml"
   done < <(workspace_manifests)
 }
 
@@ -343,8 +405,11 @@ main() {
 
   need_cmd awk
   need_cmd cargo
+  need_cmd cp
   need_cmd date
+  need_cmd dirname
   need_cmd git
+  need_cmd mkdir
   need_cmd mktemp
 
   local repo_root old_version tag_name previous_tag release_date
@@ -368,6 +433,7 @@ main() {
   previous_tag="$(previous_release_tag)"
   release_date="$(date +%Y-%m-%d)"
 
+  backup_release_state
   update_workspace_manifest_versions "$version"
   update_changelog "$version" "$release_date" "$previous_tag"
   run_quality_gates
@@ -376,6 +442,7 @@ main() {
   stage_workspace_manifests
   git commit -s -m "chore(release): $tag_name" \
     -m "bump workspace packages to $version and update generated release notes"
+  RELEASE_COMMITTED=1
   git tag -a "$tag_name" -m "release: $tag_name"
 
   if ((run_push)); then
