@@ -226,6 +226,44 @@ async fn cleanup_user(pool: &PgPool, user_id: Uuid) {
     .await;
 }
 
+#[tokio::test]
+async fn cli_user_update_persists_password_hash() {
+  let Some(database_url) = database_url() else {
+    return;
+  };
+  migrate_database(&database_url).await;
+
+  let pool = PgPool::connect(&database_url).await.expect("connect test db");
+  let email = format!("cli-update-{}@example.com", unique_suffix());
+  let user_id = insert_user(&pool, &email).await;
+
+  let output = Command::new(env!("CARGO_BIN_EXE_haya"))
+    .env("DATABASE_URL", &database_url)
+    .env("JWT_SECRET", JWT_SECRET)
+    .env("MFA_ENCRYPTION_KEY", MFA_KEY_MATERIAL)
+    .args(["user", "update", &email, "--password", "N3w-Password!2026"])
+    .output()
+    .expect("run user update");
+  assert!(
+    output.status.success(),
+    "user update failed: {}",
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let password_hash: Option<String> =
+    sqlx::query_scalar("SELECT encrypted_password FROM auth.users WHERE id = $1")
+      .bind(user_id)
+      .fetch_one(&pool)
+      .await
+      .expect("fetch updated password hash");
+  assert!(
+    password_hash.is_some_and(|hash| !hash.trim().is_empty()),
+    "password was not persisted"
+  );
+
+  cleanup_user(&pool, user_id).await;
+}
+
 async fn create_session(pool: &PgPool, user_id: Uuid) -> Uuid {
   let session_id = Uuid::new_v4();
   let now = Utc::now();

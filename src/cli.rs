@@ -1428,6 +1428,75 @@ struct UserUpdateOptions {
   status: Option<AccountStatus>,
 }
 
+fn build_user_update_query<'a>(
+  options: &'a UserUpdateOptions,
+  hashed_password: Option<&'a str>,
+  now: chrono::DateTime<Utc>,
+  user_id: Uuid,
+) -> anyhow::Result<QueryBuilder<'a, Postgres>> {
+  let mut builder = QueryBuilder::<Postgres>::new("UPDATE auth.users SET ");
+  let mut changed = false;
+
+  {
+    let mut separated = builder.separated(", ");
+
+    if let Some(ref email) = options.email {
+      separated.push("email = ").push_bind_unseparated(email);
+      changed = true;
+    }
+    if let Some(ref phone) = options.phone {
+      separated.push("phone = ").push_bind_unseparated(phone);
+      changed = true;
+    }
+    if let Some(password_hash) = hashed_password {
+      separated
+        .push("encrypted_password = ")
+        .push_bind_unseparated(password_hash);
+      changed = true;
+    }
+    if let Some(ref role) = options.role {
+      separated.push("role = ").push_bind_unseparated(role);
+      changed = true;
+    }
+    if options.unban {
+      separated.push("banned_until = NULL");
+      changed = true;
+    } else if let Some(ref duration) = options.ban_duration {
+      let seconds = parse_ban_duration(duration)?;
+      separated
+        .push("banned_until = ")
+        .push_bind_unseparated(now + chrono::Duration::seconds(seconds));
+      changed = true;
+    }
+    if let Some(status) = options.status {
+      match status {
+        AccountStatus::Active => {
+          separated.push("deleted_at = NULL");
+          if !options.unban && options.ban_duration.is_none() {
+            separated.push("banned_until = NULL");
+          }
+        },
+        AccountStatus::Deleted => {
+          separated.push("deleted_at = ").push_bind_unseparated(now);
+        },
+      }
+      changed = true;
+    }
+
+    if !changed {
+      bail!("no updates requested");
+    }
+
+    // `push_bind_unseparated` above only attaches placeholders to their
+    // assignment fragments; the separator is emitted by `push`.
+    separated.push("updated_at = ").push_bind_unseparated(now);
+  }
+
+  builder.push(" WHERE id = ");
+  builder.push_bind(user_id);
+  Ok(builder)
+}
+
 async fn update_user_record(
   state: &AppState,
   identifier: &str,
@@ -1464,62 +1533,8 @@ async fn update_user_record(
     bail!("use either --ban-duration or --unban, not both");
   }
 
-  let mut builder = QueryBuilder::<Postgres>::new("UPDATE auth.users SET ");
-  let mut separated = builder.separated(", ");
   let now = Utc::now();
-  let mut changed = false;
-
-  if let Some(ref email) = options.email {
-    separated.push("email = ").push_bind(email);
-    changed = true;
-  }
-  if let Some(ref phone) = options.phone {
-    separated.push("phone = ").push_bind(phone);
-    changed = true;
-  }
-  if let Some(ref password_hash) = hashed_password {
-    separated.push("encrypted_password = ").push_bind(password_hash);
-    changed = true;
-  }
-  if let Some(ref role) = options.role {
-    separated.push("role = ").push_bind(role);
-    changed = true;
-  }
-  if options.unban {
-    separated.push("banned_until = NULL");
-    changed = true;
-  } else if let Some(ref duration) = options.ban_duration {
-    let seconds = parse_ban_duration(duration)?;
-    separated
-      .push("banned_until = ")
-      .push_bind(now + chrono::Duration::seconds(seconds));
-    changed = true;
-  }
-  if let Some(status) = options.status {
-    match status {
-      AccountStatus::Active => {
-        separated.push("deleted_at = NULL");
-        if !options.unban && options.ban_duration.is_none() {
-          separated.push("banned_until = NULL");
-        }
-      },
-      AccountStatus::Deleted => {
-        separated.push("deleted_at = ").push_bind(now);
-      },
-    }
-    changed = true;
-  }
-
-  if !changed {
-    bail!("no updates requested");
-  }
-
-  {
-    let mut separated = separated;
-    separated.push("updated_at = ").push_bind(now);
-  }
-  builder.push(" WHERE id = ");
-  builder.push_bind(user_id);
+  let mut builder = build_user_update_query(&options, hashed_password.as_deref(), now, user_id)?;
   builder.build().execute(&state.db).await?;
 
   let user = fetch_user_by_id(&state.db, user_id).await?;
@@ -2348,6 +2363,28 @@ mod tests {
     };
 
     assert!(!args.pkce);
+  }
+
+  #[test]
+  fn user_update_query_keeps_assignments_and_placeholders_paired() {
+    let options = UserUpdateOptions {
+      email: None,
+      phone: None,
+      password: Some("new-password".to_string()),
+      role: Some("authenticated".to_string()),
+      ban_duration: None,
+      unban: false,
+      status: None,
+    };
+    let query = build_user_update_query(&options, Some("hashed-password"), Utc::now(), Uuid::nil())
+      .expect("build user update query");
+    let sql = query.sql();
+
+    assert!(sql.contains("encrypted_password = $1"), "unexpected SQL: {sql}");
+    assert!(sql.contains("role = $2"), "unexpected SQL: {sql}");
+    assert!(sql.contains("updated_at = $3"), "unexpected SQL: {sql}");
+    assert!(sql.contains(" WHERE id = $4"), "unexpected SQL: {sql}");
+    assert!(!sql.contains("= ,"), "separator leaked into assignment: {sql}");
   }
 
   #[test]
