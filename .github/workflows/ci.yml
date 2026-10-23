@@ -12,6 +12,10 @@ env:
   JWT_SECRET: github-actions-jwt-secret-with-at-least-32-characters
   MFA_ENCRYPTION_KEY: github-actions-mfa-encryption-key-material
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   checks:
     runs-on: ubuntu-latest

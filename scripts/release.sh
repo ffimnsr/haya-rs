@@ -118,23 +118,32 @@ update_manifest_version() {
 
 workspace_manifests() {
   awk '
+    function trim(value) {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      return value
+    }
     BEGIN { in_workspace = 0; in_members = 0 }
-    /^\[workspace\]$/ { in_workspace = 1; next }
-    in_workspace && /^\[/ && $0 != "[workspace]" { exit }
+    /^\[workspace\][[:space:]]*$/ { in_workspace = 1; next }
+    in_workspace && /^\[/ { exit }
     in_workspace {
-      if ($0 ~ /^[[:space:]]*members[[:space:]]*=/) {
+      if (!in_members && $0 ~ /^[[:space:]]*members[[:space:]]*=/) {
         line = $0
-        sub(/^[^=]*=[[:space:]]*/, "", line)
-        gsub(/[][]|"/, "", line)
-        count = split(line, parts, /,[[:space:]]*/)
-        for (i = 1; i <= count; i++) if (length(parts[i])) print parts[i]
-        in_members = 1
+        sub(/^[^=]*=/, "", line)
+        in_members = ($0 !~ /\]/)
+        sub(/^[[:space:]]*\[/, "", line)
       } else if (in_members) {
         line = $0
-        gsub(/[][]|"/, "", line)
-        count = split(line, parts, /,[[:space:]]*/)
-        for (i = 1; i <= count; i++) if (length(parts[i])) print parts[i]
-        if ($0 ~ /\]/) in_members = 0
+        in_members = ($0 !~ /\]/)
+      } else {
+        next
+      }
+      sub(/\].*$/, "", line)
+      sub(/#.*/, "", line)
+      gsub(/"/, "", line)
+      count = split(line, parts, ",")
+      for (i = 1; i <= count; i++) {
+        member = trim(parts[i])
+        if (length(member)) print member
       }
     }
   ' "$RELEASE_MANIFEST"

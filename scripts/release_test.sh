@@ -42,6 +42,7 @@ trap 'rm -rf "$work_dir"' EXIT
 cat >"$work_dir/Cargo.toml" <<'EOF'
 [workspace]
 members = [".", "crates/internal"]
+resolver = "2"
 
 [package]
 name = "fixture"
