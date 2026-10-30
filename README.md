@@ -113,6 +113,9 @@ Admin routes:
 - `GET /admin/users/:id`
 - `PUT /admin/users/:id`
 - `DELETE /admin/users/:id`
+- `GET /admin/invite-codes`
+- `POST /admin/invite-codes`
+- `DELETE /admin/invite-codes/:id`
 
 ## CLI Commands
 
@@ -184,6 +187,7 @@ Supported command groups:
 - `haya sso list|show|add|update|delete|test|discover|sync-cache`
 - `haya admin list|add|update|verify|delete`
 - `haya user list|show|sessions|reset-password|add|update|verify|delete`
+- `haya invite create|list|revoke`
 
 ## Configuration Reference
 
@@ -210,6 +214,7 @@ Supported command groups:
 - `MAILER_AUTOCONFIRM`: enables automatic confirmation when set to `true` or `1`.
 - `DISABLE_SIGNUP`: when `true` or `1`, `POST /signup` returns `403 signup_disabled`. Defaults to false.
 - `GOTRUE_DISABLE_SIGNUP`: GoTrue-compatible alias for `DISABLE_SIGNUP`.
+- `REQUIRE_INVITE_CODE`: when `true` or `1`, `POST /signup` also requires an unused one-time `invite_code`. Defaults to false.
 - `TURNSTILE_SECRET_KEY`: optional Cloudflare Turnstile secret. When set, signup requires a valid Turnstile token.
 - `TURNSTILE_ALLOWED_HOSTNAMES`: comma-separated hostnames allowed in the Turnstile response. When unset, hosts are derived from `SITE_URL`, `CORS_ALLOWED_ORIGINS`, and `ALLOWED_REDIRECT_ORIGINS`.
 - `TURNSTILE_ACTION`: optional expected Turnstile action value. Set to `signup` when the widget uses `action: "signup"`.
@@ -255,6 +260,33 @@ The GoTrue-compatible field is also accepted:
 ```
 
 Verification is fail-closed. A missing, rejected, expired, replayed, or hostname/action-mismatched token returns `400 captcha_failed`. A siteverify timeout, network failure, or unusable response returns `503 captcha_unavailable`. Tokens and secrets are never logged.
+
+### Invite-only signup
+
+Set `REQUIRE_INVITE_CODE=true` to require a one-time invite code for every new email/password signup. Enforcement happens in Haya, so direct `POST /signup` calls are covered even when the browser UI omits the field. OIDC/SSO account creation is blocked while this mode is enabled because provider callbacks cannot carry an invite code; existing SSO identities and email-matching accounts still sign in.
+
+Admins create a code with a service-role token:
+
+```bash
+curl -sS http://localhost:9999/admin/invite-codes \
+  -H "Authorization: Bearer $SERVICE_ROLE_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"label": "design-partner", "expires_at": "2026-12-31T23:59:59Z"}'
+```
+
+The response includes the plaintext `code` exactly once. Only its SHA-256 hash is stored. List and revoke codes with `GET /admin/invite-codes` and `DELETE /admin/invite-codes/:id`; the same operations are available through `haya invite create|list|revoke`.
+
+Signup with the code:
+
+```json
+{
+  "email": "user@example.com",
+  "password": "long-enough1",
+  "invite_code": "<code>"
+}
+```
+
+Codes are single-use by database predicate (not application state): concurrent redemptions cannot both succeed. Missing codes return `400 invite_code_required`; expired, revoked, used, or unknown codes return `400 invite_code_invalid`. Codes are case-insensitive and trimmed.
 
 ### systemd watchdog
 

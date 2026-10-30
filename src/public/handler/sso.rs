@@ -339,6 +339,11 @@ async fn provision_sso_user(
   if state.signup_disabled {
     return Err(AuthError::SignupDisabled);
   }
+  if state.require_invite_code {
+    // OIDC callbacks cannot carry a one-time code, so fail closed for new
+    // SSO accounts. Existing identities and linked accounts still sign in.
+    return Err(AuthError::InviteCodeRequired);
+  }
 
   let user_id = Uuid::new_v4();
   let user_metadata = serde_json::json!({

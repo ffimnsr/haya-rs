@@ -314,6 +314,7 @@ fn build_runtime_bootstrap(require_database: bool) -> anyhow::Result<RuntimeBoot
   allowed_redirect_origins.dedup();
   let site_name = env::var("SITE_NAME").unwrap_or_else(|_| "Haya".to_string());
   let signup_disabled = env_flag_enabled("DISABLE_SIGNUP") || env_flag_enabled("GOTRUE_DISABLE_SIGNUP");
+  let require_invite_code = env_flag_enabled("REQUIRE_INVITE_CODE");
   let mut turnstile_hostnames = parse_host_list_env("TURNSTILE_ALLOWED_HOSTNAMES");
   if turnstile_hostnames.is_empty() {
     let mut origin_values = vec![site_url.as_str()];
@@ -432,6 +433,7 @@ fn build_runtime_bootstrap(require_database: bool) -> anyhow::Result<RuntimeBoot
     jwt_secret_len: jwt_secret.len(),
     mailer_autoconfirm,
     signup_disabled,
+    require_invite_code,
     turnstile: turnstile.clone(),
     smtp_configured,
     dev_mode,
@@ -473,6 +475,7 @@ async fn build_app_state(bootstrap: &RuntimeBootstrap) -> anyhow::Result<AppStat
     oidc_jwks_cache: Arc::new(RwLock::new(std::collections::HashMap::new())),
     mailer_autoconfirm: bootstrap.config.mailer_autoconfirm,
     signup_disabled: bootstrap.config.signup_disabled,
+    require_invite_code: bootstrap.config.require_invite_code,
     mailer: bootstrap.mailer.clone(),
     passkey: bootstrap.passkey.clone(),
     turnstile: bootstrap.turnstile.clone(),
@@ -482,6 +485,8 @@ async fn build_app_state(bootstrap: &RuntimeBootstrap) -> anyhow::Result<AppStat
   }
   if state.signup_disabled {
     tracing::info!("Public signup is disabled");
+  } else if state.require_invite_code {
+    tracing::info!("Public signup requires a one-time invite code");
   }
   if let Some(turnstile) = &state.turnstile {
     tracing::info!(

@@ -6,6 +6,8 @@ pub(crate) struct SignupRequest {
   pub password: Option<String>,
   pub phone: Option<String>,
   pub data: Option<serde_json::Value>,
+  /// One-time invite code required when `REQUIRE_INVITE_CODE` is enabled.
+  pub invite_code: Option<String>,
   /// Explicit Turnstile token. When absent, the GoTrue-compatible
   /// `gotrue_meta_security.captcha_token` field is used instead.
   pub turnstile_token: Option<String>,
@@ -45,12 +47,25 @@ mod tests {
   }
 
   #[test]
+  fn signup_request_accepts_invite_code() {
+    let request: SignupRequest = serde_json::from_value(serde_json::json!({
+      "email": "user@example.com",
+      "password": "long-enough1",
+      "invite_code": "abc123"
+    }))
+    .expect("signup body with invite code");
+
+    assert_eq!(request.invite_code.as_deref(), Some("abc123"));
+  }
+
+  #[test]
   fn captcha_token_prefers_explicit_turnstile_field() {
     let request = SignupRequest {
       email: Some("user@example.com".to_string()),
       password: Some("long-enough1".to_string()),
       phone: None,
       data: None,
+      invite_code: None,
       turnstile_token: Some("explicit-token".to_string()),
       gotrue_meta_security: Some(GoTrueMetaSecurity {
         captcha_token: Some("compat-token".to_string()),

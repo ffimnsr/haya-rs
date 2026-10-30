@@ -27,6 +27,7 @@ use tokio::time::{
 use uuid::Uuid;
 
 use crate::auth::{
+  audit,
   jwt,
   oidc,
   password,
@@ -34,6 +35,11 @@ use crate::auth::{
   session,
 };
 use crate::mailer::EmailKind;
+use crate::model::invite_code::{
+  create_invite_code,
+  list_invite_codes,
+  revoke_invite_code,
+};
 use crate::model::{
   User,
   UserResponse,
@@ -78,6 +84,7 @@ impl Cli {
         | Some(Command::Sso { .. })
         | Some(Command::Admin { .. })
         | Some(Command::User { .. })
+        | Some(Command::Invite { .. })
     )
   }
 
@@ -136,6 +143,10 @@ pub enum Command {
   User {
     #[command(subcommand)]
     command: UserCommand,
+  },
+  Invite {
+    #[command(subcommand)]
+    command: InviteCommand,
   },
 }
 
@@ -217,6 +228,36 @@ pub enum UserCommand {
   Delete(DeleteUserArgs),
   Update(UpdateUserArgs),
   Verify(VerifyUserArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum InviteCommand {
+  Create(InviteCreateArgs),
+  List(InviteListArgs),
+  Revoke(InviteRevokeArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct InviteCreateArgs {
+  #[arg(long)]
+  pub label: Option<String>,
+  #[arg(long)]
+  pub note: Option<String>,
+  #[arg(long)]
+  pub expires_in_hours: Option<u64>,
+  #[arg(long)]
+  pub created_by: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct InviteListArgs {
+  #[arg(long, default_value_t = 100)]
+  pub limit: i64,
+}
+
+#[derive(Debug, Args)]
+pub struct InviteRevokeArgs {
+  pub id: Uuid,
 }
 
 #[derive(Debug, Args)]
@@ -492,6 +533,7 @@ struct CliStatus {
   site_name: String,
   mailer_autoconfirm: bool,
   signup_disabled: bool,
+  require_invite_code: bool,
   turnstile_enabled: bool,
   smtp_configured: bool,
   oidc_provider_count: usize,
@@ -518,6 +560,7 @@ struct SettingsView {
   mfa_key_source: &'static str,
   mailer_autoconfirm: bool,
   signup_disabled: bool,
+  require_invite_code: bool,
   turnstile_enabled: bool,
   smtp_configured: bool,
   dev_mode: bool,
@@ -546,6 +589,7 @@ struct DoctorReport {
   oidc_table_present: bool,
   audit_table_present: bool,
   signup_disabled: bool,
+  require_invite_code: bool,
   turnstile_enabled: bool,
   smtp_configured: bool,
   site_url: String,
@@ -688,6 +732,7 @@ struct ConfigValidateReport {
   allowed_redirect_origins: Vec<String>,
   allowed_redirect_path_prefixes: Vec<String>,
   signup_disabled: bool,
+  require_invite_code: bool,
   turnstile_enabled: bool,
 }
 
@@ -710,6 +755,7 @@ pub async fn run(cli: Cli, state: AppState, config: RuntimeConfig) -> anyhow::Re
     Some(Command::Sso { command }) => run_sso_command(command, &state).await,
     Some(Command::Admin { command }) => run_admin_command(command, &state).await,
     Some(Command::User { command }) => run_user_command(command, &state).await,
+    Some(Command::Invite { command }) => run_invite_command(command, &state).await,
     Some(Command::Heartbeat)
     | Some(Command::Settings)
     | Some(Command::Reload)
@@ -787,6 +833,7 @@ async fn show_status(db: &PgPool, state: &AppState, config: &RuntimeConfig) -> a
     site_name: config.site_name.clone(),
     mailer_autoconfirm: config.mailer_autoconfirm,
     signup_disabled: config.signup_disabled,
+    require_invite_code: config.require_invite_code,
     turnstile_enabled: config.turnstile.is_some(),
     smtp_configured: config.smtp_configured,
     oidc_provider_count,
@@ -814,6 +861,7 @@ fn show_settings(config: &RuntimeConfig) -> anyhow::Result<()> {
     mfa_key_source: config.mfa_key_source,
     mailer_autoconfirm: config.mailer_autoconfirm,
     signup_disabled: config.signup_disabled,
+    require_invite_code: config.require_invite_code,
     turnstile_enabled: config.turnstile.is_some(),
     smtp_configured: config.smtp_configured,
     dev_mode: config.dev_mode,
@@ -888,6 +936,7 @@ async fn doctor(db: &PgPool, config: &RuntimeConfig) -> anyhow::Result<()> {
     oidc_table_present,
     audit_table_present,
     signup_disabled: config.signup_disabled,
+    require_invite_code: config.require_invite_code,
     turnstile_enabled: config.turnstile.is_some(),
     smtp_configured: config.smtp_configured,
     site_url: config.site_url.clone(),
@@ -1056,6 +1105,74 @@ async fn run_user_command(command: UserCommand, state: &AppState) -> anyhow::Res
       print_json(&user)
     },
     UserCommand::Verify(args) => verify_user(&state.db, &args.identifier).await,
+  }
+}
+
+async fn run_invite_command(command: InviteCommand, state: &AppState) -> anyhow::Result<()> {
+  match command {
+    InviteCommand::Create(args) => {
+      let expires_at = match args.expires_in_hours {
+        Some(0) => bail!("--expires-in-hours must be greater than zero"),
+        Some(hours) => {
+          let hours = i64::try_from(hours).context("--expires-in-hours is too large")?;
+          let duration = chrono::Duration::try_hours(hours).context("--expires-in-hours is too large")?;
+          Some(Utc::now() + duration)
+        },
+        None => None,
+      };
+      let created_by = match args.created_by.as_deref() {
+        Some(identifier) => Some(resolve_user_identifier(&state.db, identifier).await?),
+        None => None,
+      };
+
+      let mut tx = state.db.begin().await?;
+      let (invite, plaintext) =
+        create_invite_code(&mut tx, created_by, args.label, args.note, expires_at).await?;
+      audit::log_event_tx(
+        tx.as_mut(),
+        state.instance_id,
+        None,
+        "invite_code_created",
+        serde_json::json!({
+          "invite_code_id": invite.id,
+          "label": invite.label,
+          "expires_at": invite.expires_at,
+          "created_by": created_by,
+        }),
+      )
+      .await?;
+      tx.commit().await?;
+
+      print_json(&serde_json::json!({
+        "id": invite.id,
+        "code": plaintext,
+        "label": invite.label,
+        "note": invite.note,
+        "expires_at": invite.expires_at,
+        "created_at": invite.created_at,
+      }))
+    },
+    InviteCommand::List(args) => {
+      let invites = list_invite_codes(&state.db, args.limit).await?;
+      print_json(&invites)
+    },
+    InviteCommand::Revoke(args) => {
+      let mut tx = state.db.begin().await?;
+      let invite = revoke_invite_code(&mut tx, args.id).await?;
+      audit::log_event_tx(
+        tx.as_mut(),
+        state.instance_id,
+        None,
+        "invite_code_revoked",
+        serde_json::json!({
+          "invite_code_id": invite.id,
+          "label": invite.label,
+        }),
+      )
+      .await?;
+      tx.commit().await?;
+      print_json(&invite)
+    },
   }
 }
 
@@ -1728,6 +1845,7 @@ fn validate_config(config: &RuntimeConfig) -> anyhow::Result<()> {
     allowed_redirect_origins: config.allowed_redirect_origins.clone(),
     allowed_redirect_path_prefixes: config.allowed_redirect_path_prefixes.clone(),
     signup_disabled: config.signup_disabled,
+    require_invite_code: config.require_invite_code,
     turnstile_enabled: config.turnstile.is_some(),
   })
 }
@@ -2340,6 +2458,7 @@ mod tests {
     assert!(!Cli::parse_from(["haya", "db", "migrate"]).needs_app_state());
     assert!(!Cli::parse_from(["haya", "config", "validate"]).needs_app_state());
     assert!(Cli::parse_from(["haya", "status"]).needs_app_state());
+    assert!(Cli::parse_from(["haya", "invite", "list"]).needs_app_state());
     assert!(Cli::parse_from(["haya"]).needs_app_state());
   }
 

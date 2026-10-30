@@ -147,6 +147,14 @@ pub fn create_router(state: AppState) -> Router {
         .put(handler::admin::admin_update_user)
         .delete(handler::admin::admin_delete_user),
     )
+    .route(
+      "/admin/invite-codes",
+      get(handler::invite::admin_list_invite_codes).post(handler::invite::admin_create_invite_code),
+    )
+    .route(
+      "/admin/invite-codes/{id}",
+      axum::routing::delete(handler::invite::admin_revoke_invite_code),
+    )
     .fallback(handler::not_found)
     .with_state(state)
     .layer(DefaultBodyLimit::max(1024 * 1024))

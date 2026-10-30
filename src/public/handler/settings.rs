@@ -17,6 +17,7 @@ pub async fn get_settings(
   Ok(Json(settings_response(
     state.mailer_autoconfirm,
     state.signup_disabled,
+    state.require_invite_code,
     crate::auth::oidc::provider_names(&providers),
     state.passkey.is_some(),
   )))
@@ -25,6 +26,7 @@ pub async fn get_settings(
 fn settings_response(
   mailer_autoconfirm: bool,
   disable_signup: bool,
+  require_invite_code: bool,
   providers: Vec<String>,
   passkey_enabled: bool,
 ) -> Value {
@@ -38,6 +40,7 @@ fn settings_response(
   serde_json::json!({
     "mailer_autoconfirm": mailer_autoconfirm,
     "disable_signup": disable_signup,
+    "require_invite_code": require_invite_code,
     "external": Value::Object(external),
     "mfa": {
       "totp": true,
@@ -55,19 +58,22 @@ mod tests {
     let disabled = settings_response(
       false,
       true,
+      true,
       vec!["github".to_owned(), "passkey".to_owned()],
       false,
     );
     assert_eq!(disabled["disable_signup"], true);
+    assert_eq!(disabled["require_invite_code"], true);
     assert_eq!(disabled["external"]["email"], true);
     assert_eq!(disabled["external"]["github"], true);
     assert_eq!(disabled["external"]["passkey"], false);
     assert_eq!(disabled["mfa"]["totp"], true);
     assert_eq!(disabled["mfa"]["webauthn"], false);
 
-    let enabled = settings_response(true, false, vec!["github".to_owned()], true);
+    let enabled = settings_response(true, false, false, vec!["github".to_owned()], true);
     assert_eq!(enabled["mailer_autoconfirm"], true);
     assert_eq!(enabled["disable_signup"], false);
+    assert_eq!(enabled["require_invite_code"], false);
     assert_eq!(enabled["external"]["passkey"], true);
     assert_eq!(enabled["mfa"]["webauthn"], true);
   }

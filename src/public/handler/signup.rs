@@ -22,6 +22,11 @@ use crate::error::{
 };
 use crate::mailer::EmailKind;
 use crate::model::User;
+use crate::model::invite_code::{
+  consume_invite_code,
+  mark_invite_code_used_by,
+  validate_invite_code,
+};
 use crate::public::handler::admin::validate_password_policy;
 use crate::state::AppState;
 use crate::utils::sha256_hex;
@@ -43,6 +48,11 @@ pub async fn signup(
     return Err(AuthError::TooManyRequests);
   }
   rate_limit::record_attempt(&state.db, &rate_limit_key, SIGNUP_RATE_LIMIT_WINDOW_SECS).await?;
+
+  let invite_code = invite_code_from_request(state.require_invite_code, req.invite_code.as_deref())?;
+  if let Some(code) = invite_code.as_deref() {
+    validate_invite_code(&state.db, code).await?;
+  }
 
   if req.email.is_none() {
     return Err(AuthError::ValidationFailed("Email is required.".to_string()));
@@ -112,31 +122,46 @@ pub async fn signup(
   };
   let confirmation_token_hash = confirmation_token.as_deref().map(sha256_hex);
 
-  let user: User = match sqlx::query_as::<_, User>(
+  let user: User = {
+    let mut tx = state.db.begin().await?;
+    let consumed_invite_id = match invite_code.as_deref() {
+      Some(code) => Some(consume_invite_code(&mut tx, code).await?),
+      None => None,
+    };
+
+    let user = match sqlx::query_as::<_, User>(
         "INSERT INTO auth.users (id, instance_id, aud, role, email, encrypted_password, phone, raw_app_meta_data, raw_user_meta_data, is_anonymous, confirmation_token, confirmation_sent_at, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, phone, phone_confirmed_at, confirmed_at, last_sign_in_at, raw_app_meta_data, raw_user_meta_data, is_super_admin, is_sso_user, is_anonymous, banned_until, deleted_at, created_at, updated_at"
-    )
-    .bind(user_id)
-    .bind(state.instance_id)
-    .bind("authenticated")
-    .bind("authenticated")
-    .bind(&req.email)
-    .bind(hashed)
-    .bind(&req.phone)
-    .bind(&app_metadata)
-    .bind(&user_metadata)
-    .bind(false)
-    .bind(&confirmation_token_hash)
-    .bind(confirmation_sent_at)
-    .bind(now)
-    .bind(now)
-    .fetch_one(&state.db)
-    .await {
-    Ok(user) => user,
-    Err(sqlx::Error::Database(err)) if err.is_unique_violation() => {
-      password::burn_password_work(req.password.as_deref().unwrap_or("passwordless-signup-padding"))?;
-      return Ok(Json(serde_json::json!({})));
-    },
-    Err(err) => return Err(err.into()),
+      )
+      .bind(user_id)
+      .bind(state.instance_id)
+      .bind("authenticated")
+      .bind("authenticated")
+      .bind(&req.email)
+      .bind(hashed)
+      .bind(&req.phone)
+      .bind(&app_metadata)
+      .bind(&user_metadata)
+      .bind(false)
+      .bind(&confirmation_token_hash)
+      .bind(confirmation_sent_at)
+      .bind(now)
+      .bind(now)
+      .fetch_one(&mut *tx)
+      .await {
+      Ok(user) => user,
+      Err(sqlx::Error::Database(err)) if err.is_unique_violation() => {
+        tx.rollback().await?;
+        password::burn_password_work(req.password.as_deref().unwrap_or("passwordless-signup-padding"))?;
+        return Ok(Json(serde_json::json!({})));
+      },
+      Err(err) => return Err(err.into()),
+    };
+
+    if let Some(invite_id) = consumed_invite_id {
+      mark_invite_code_used_by(&mut tx, invite_id, user.id).await?;
+    }
+    tx.commit().await?;
+    user
   };
 
   // Send confirmation email when auto-confirm is disabled.
@@ -172,6 +197,16 @@ fn ensure_signup_enabled(signup_disabled: bool) -> Result<()> {
     return Err(AuthError::SignupDisabled);
   }
   Ok(())
+}
+
+fn invite_code_from_request(require_invite_code: bool, invite_code: Option<&str>) -> Result<Option<String>> {
+  if !require_invite_code {
+    return Ok(None);
+  }
+  match invite_code.map(str::trim).filter(|code| !code.is_empty()) {
+    Some(code) => Ok(Some(code.to_string())),
+    None => Err(AuthError::InviteCodeRequired),
+  }
 }
 
 fn signup_ip_rate_limit_key(client_ip: IpAddr) -> String {
@@ -214,6 +249,24 @@ mod tests {
       Err(AuthError::SignupDisabled)
     ));
     assert!(ensure_signup_enabled(false).is_ok());
+  }
+
+  #[test]
+  fn invite_code_gate_is_explicit() {
+    assert!(matches!(
+      invite_code_from_request(true, None),
+      Err(AuthError::InviteCodeRequired)
+    ));
+    assert!(matches!(
+      invite_code_from_request(true, Some("   ")),
+      Err(AuthError::InviteCodeRequired)
+    ));
+    assert_eq!(
+      invite_code_from_request(true, Some(" code ")).unwrap(),
+      Some("code".to_string())
+    );
+    assert_eq!(invite_code_from_request(false, None).unwrap(), None);
+    assert_eq!(invite_code_from_request(false, Some("ignored")).unwrap(), None);
   }
 
   #[test]

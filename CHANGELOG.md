@@ -4,9 +4,10 @@
 
 ### Features
 
+- add one-time invite-code signup gated by `REQUIRE_INVITE_CODE`, with admin HTTP and CLI management
 - add optional Cloudflare Turnstile verification to signup (`TURNSTILE_*`)
 - add `DISABLE_SIGNUP` / `GOTRUE_DISABLE_SIGNUP` to close public signup
-- expose signup and Turnstile state in CLI settings, status, doctor, and config validation
+- expose signup, invite, and Turnstile state in CLI settings, status, doctor, and config validation
 
 ## 0.3.3 - 2026-10-30
 

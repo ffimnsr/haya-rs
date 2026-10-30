@@ -1,3 +1,5 @@
+pub(crate) mod invite_code;
+
 use std::collections::HashMap;
 
 use chrono::{

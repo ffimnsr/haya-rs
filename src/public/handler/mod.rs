@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod health;
+pub mod invite;
 pub mod logout;
 pub mod mfa;
 pub mod otp;

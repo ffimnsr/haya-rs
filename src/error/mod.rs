@@ -38,6 +38,14 @@ pub enum AuthError {
   TooManyRequests,
   #[error("Signups are not allowed for this instance")]
   SignupDisabled,
+  #[error("An invite code is required to sign up")]
+  InviteCodeRequired,
+  #[error("Invalid or already used invite code")]
+  InvalidInviteCode,
+  #[error("Invite code not found")]
+  InviteCodeNotFound,
+  #[error("Invite code is no longer active")]
+  InviteCodeNotActive,
   #[error("CAPTCHA verification failed")]
   CaptchaFailed,
   #[error("CAPTCHA verification is temporarily unavailable")]
@@ -82,6 +90,9 @@ impl AuthError {
       AuthError::UserBanned => StatusCode::FORBIDDEN,
       AuthError::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
       AuthError::SignupDisabled => StatusCode::FORBIDDEN,
+      AuthError::InviteCodeRequired | AuthError::InvalidInviteCode => StatusCode::BAD_REQUEST,
+      AuthError::InviteCodeNotFound => StatusCode::NOT_FOUND,
+      AuthError::InviteCodeNotActive => StatusCode::CONFLICT,
       AuthError::CaptchaFailed => StatusCode::BAD_REQUEST,
       AuthError::CaptchaUnavailable => StatusCode::SERVICE_UNAVAILABLE,
       AuthError::PasskeyDisabled => StatusCode::NOT_FOUND,
@@ -108,6 +119,10 @@ impl AuthError {
       AuthError::UserBanned => "user_banned",
       AuthError::TooManyRequests => "too_many_requests",
       AuthError::SignupDisabled => "signup_disabled",
+      AuthError::InviteCodeRequired => "invite_code_required",
+      AuthError::InvalidInviteCode => "invite_code_invalid",
+      AuthError::InviteCodeNotFound => "invite_code_not_found",
+      AuthError::InviteCodeNotActive => "invite_code_not_active",
       AuthError::CaptchaFailed => "captcha_failed",
       AuthError::CaptchaUnavailable => "captcha_unavailable",
       AuthError::PasskeyDisabled => "passkey_not_enabled",
@@ -198,6 +213,16 @@ mod tests {
     assert_eq!(AuthError::UserBanned.error_code(), "user_banned");
     assert_eq!(AuthError::TooManyRequests.error_code(), "too_many_requests");
     assert_eq!(AuthError::SignupDisabled.error_code(), "signup_disabled");
+    assert_eq!(AuthError::InviteCodeRequired.error_code(), "invite_code_required");
+    assert_eq!(AuthError::InvalidInviteCode.error_code(), "invite_code_invalid");
+    assert_eq!(
+      AuthError::InviteCodeNotFound.error_code(),
+      "invite_code_not_found"
+    );
+    assert_eq!(
+      AuthError::InviteCodeNotActive.error_code(),
+      "invite_code_not_active"
+    );
     assert_eq!(AuthError::CaptchaFailed.error_code(), "captcha_failed");
     assert_eq!(AuthError::CaptchaUnavailable.error_code(), "captcha_unavailable");
     assert_eq!(AuthError::PasskeyDisabled.error_code(), "passkey_not_enabled");
@@ -245,6 +270,16 @@ mod tests {
       StatusCode::TOO_MANY_REQUESTS
     );
     assert_eq!(AuthError::SignupDisabled.status_code(), StatusCode::FORBIDDEN);
+    assert_eq!(
+      AuthError::InviteCodeRequired.status_code(),
+      StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+      AuthError::InvalidInviteCode.status_code(),
+      StatusCode::BAD_REQUEST
+    );
+    assert_eq!(AuthError::InviteCodeNotFound.status_code(), StatusCode::NOT_FOUND);
+    assert_eq!(AuthError::InviteCodeNotActive.status_code(), StatusCode::CONFLICT);
     assert_eq!(AuthError::CaptchaFailed.status_code(), StatusCode::BAD_REQUEST);
     assert_eq!(
       AuthError::CaptchaUnavailable.status_code(),

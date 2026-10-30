@@ -534,6 +534,7 @@ mod tests {
       oidc_jwks_cache: Arc::new(RwLock::new(HashMap::new())),
       mailer_autoconfirm: false,
       signup_disabled: false,
+      require_invite_code: false,
       mailer: None,
       passkey: None,
       turnstile: None,

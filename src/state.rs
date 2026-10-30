@@ -34,6 +34,8 @@ pub struct AppState {
   pub mailer_autoconfirm: bool,
   /// When true, `POST /signup` is rejected for every caller.
   pub signup_disabled: bool,
+  /// When true, public signup also requires an unused one-time invite code.
+  pub require_invite_code: bool,
   /// SMTP mailer; `None` when `SMTP_HOST` is not configured
   pub mailer: Option<Arc<Mailer>>,
   /// Validated WebAuthn relying party; `None` when passkeys are disabled.
@@ -61,6 +63,7 @@ pub struct RuntimeConfig {
   pub jwt_secret_len: usize,
   pub mailer_autoconfirm: bool,
   pub signup_disabled: bool,
+  pub require_invite_code: bool,
   pub turnstile: Option<Arc<TurnstileConfig>>,
   pub smtp_configured: bool,
   pub dev_mode: bool,

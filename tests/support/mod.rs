@@ -264,20 +264,25 @@ async fn migrate_database(database_url: &str) {
 }
 
 pub async fn test_context() -> Option<TestContext> {
-  test_context_with_options(None, true).await
+  test_context_with_options(None, true, false).await
 }
 
 pub async fn test_context_with_oidc_provider(provider_name: Option<&str>) -> Option<TestContext> {
-  test_context_with_options(provider_name, true).await
+  test_context_with_options(provider_name, true, false).await
 }
 
 pub async fn test_context_without_passkeys() -> Option<TestContext> {
-  test_context_with_options(None, false).await
+  test_context_with_options(None, false, false).await
+}
+
+pub async fn test_context_with_require_invite_code() -> Option<TestContext> {
+  test_context_with_options(None, true, true).await
 }
 
 async fn test_context_with_options(
   provider_name: Option<&str>,
   passkey_enabled: bool,
+  require_invite_code: bool,
 ) -> Option<TestContext> {
   let source_database_url = std::env::var("DATABASE_URL").ok()?;
   let (database_url, database_cleanup) = create_isolated_database(&source_database_url).await;
@@ -312,6 +317,7 @@ async fn test_context_with_options(
     .env("HAYA_PID_FILE", &pid_file)
     .env("HAYA_DEV_MODE", "true")
     .env("PASSKEY_ENABLED", passkey_enabled.to_string())
+    .env("REQUIRE_INVITE_CODE", require_invite_code.to_string())
     .env("PASSKEY_RP_ID", "localhost")
     .env("PASSKEY_RP_NAME", "Haya Phase 5")
     .env("PASSKEY_RP_ORIGINS", PASSKEY_TEST_ORIGIN)
