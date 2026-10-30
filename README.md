@@ -232,7 +232,7 @@ Supported command groups:
 
 ### Signup controls
 
-`POST /signup` remains enabled by default. Set `DISABLE_SIGNUP=true` (or `GOTRUE_DISABLE_SIGNUP=true`) to reject every signup with `403 signup_disabled`.
+`POST /signup` remains enabled by default. Set `DISABLE_SIGNUP=true` (or `GOTRUE_DISABLE_SIGNUP=true`) to reject every signup with `403 signup_disabled`. This also blocks new-account provisioning through OIDC/SSO; existing SSO identities and email-matching accounts still sign in.
 
 Cloudflare Turnstile is opt-in. Leaving `TURNSTILE_SECRET_KEY` unset preserves the previous signup behavior. When it is set, every signup must include a token:
 

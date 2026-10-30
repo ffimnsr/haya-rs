@@ -333,6 +333,13 @@ async fn provision_sso_user(
     }
   }
 
+  // Existing identities and email-matching accounts are sign-ins. Reaching
+  // this point means a new account would be created, so the signup kill
+  // switch applies to SSO too.
+  if state.signup_disabled {
+    return Err(AuthError::SignupDisabled);
+  }
+
   let user_id = Uuid::new_v4();
   let user_metadata = serde_json::json!({
     "name": profile.name,

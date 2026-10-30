@@ -10,6 +10,7 @@ pub mod recover;
 pub mod resend;
 pub mod settings;
 pub mod signup;
+mod signup_request;
 pub mod sso;
 pub mod token;
 pub mod user;
