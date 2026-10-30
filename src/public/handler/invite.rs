@@ -71,6 +71,7 @@ pub async fn admin_create_invite_code(
     "label": invite.label,
     "note": invite.note,
     "expires_at": invite.expires_at,
+    "status": invite.status,
     "created_at": invite.created_at,
   })))
 }

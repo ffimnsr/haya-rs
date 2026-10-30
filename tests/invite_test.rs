@@ -1,6 +1,10 @@
 mod support;
 
 use serde_json::Value;
+use sha2::{
+  Digest,
+  Sha256,
+};
 use sqlx::PgPool;
 use support::{
   create_session,
@@ -34,6 +38,11 @@ async fn count_users_with_email(pool: &PgPool, email: &str) -> i64 {
     .fetch_one(pool)
     .await
     .expect("count users")
+}
+
+fn invite_code_hash(code: &str) -> String {
+  let digest = Sha256::digest(code.as_bytes());
+  format!("{digest:x}")
 }
 
 async fn create_code(ctx: &support::TestContext, admin: &AdminSession, label: &str) -> Value {
@@ -93,12 +102,35 @@ async fn signup_requires_a_one_time_invite_code_when_enabled() {
   assert_eq!(invited.status(), reqwest::StatusCode::OK);
   assert_eq!(count_users_with_email(&ctx.pool, &invited_email).await, 1);
 
+  let invite_id = Uuid::parse_str(created["id"].as_str().expect("invite id")).expect("uuid");
   let used_by: Option<Uuid> = sqlx::query_scalar("SELECT used_by FROM auth.invite_codes WHERE id = $1")
-    .bind(Uuid::parse_str(created["id"].as_str().expect("invite id")).expect("uuid"))
+    .bind(invite_id)
     .fetch_one(&ctx.pool)
     .await
     .expect("used_by");
-  assert!(used_by.is_some());
+  let invited_user_id: Uuid = sqlx::query_scalar("SELECT id FROM auth.users WHERE email = $1")
+    .bind(&invited_email)
+    .fetch_one(&ctx.pool)
+    .await
+    .expect("invited user id");
+  assert_eq!(used_by, Some(invited_user_id));
+
+  let listed = ctx
+    .client
+    .get(format!("{}/admin/invite-codes", ctx.base_url))
+    .bearer_auth(&admin.token)
+    .send()
+    .await
+    .expect("list invite codes");
+  assert_eq!(listed.status(), reqwest::StatusCode::OK);
+  let listed: Value = listed.json().await.expect("invite list json");
+  let listed_invite = listed["invite_codes"]
+    .as_array()
+    .expect("invite_codes array")
+    .iter()
+    .find(|invite| invite["id"] == created["id"])
+    .expect("created invite in list");
+  assert_eq!(listed_invite["status"], "used");
 
   // A used code must not create a second account.
   let second_email = format!("invite-reused-{}@example.com", unique_suffix());
@@ -148,6 +180,33 @@ async fn signup_requires_a_one_time_invite_code_when_enabled() {
     .expect("signup with revoked code");
   assert_eq!(rejected.status(), reqwest::StatusCode::BAD_REQUEST);
   assert_eq!(count_users_with_email(&ctx.pool, &revoked_email).await, 0);
+
+  // Expired codes are rejected by the database predicate.
+  let expired_code = format!("expired-{}", unique_suffix());
+  sqlx::query(
+    "INSERT INTO auth.invite_codes (id, code_hash, label, expires_at, created_at, updated_at) VALUES ($1, $2, 'expired', now() - interval '1 hour', now(), now())",
+  )
+  .bind(Uuid::new_v4())
+  .bind(invite_code_hash(&expired_code))
+  .execute(&ctx.pool)
+  .await
+  .expect("insert expired invite code");
+  let expired_email = format!("invite-expired-{}@example.com", unique_suffix());
+  let expired = ctx
+    .client
+    .post(format!("{}/signup", ctx.base_url))
+    .json(&serde_json::json!({
+      "email": expired_email,
+      "password": "N3w-Password!2026",
+      "invite_code": expired_code,
+    }))
+    .send()
+    .await
+    .expect("signup with expired code");
+  assert_eq!(expired.status(), reqwest::StatusCode::BAD_REQUEST);
+  let expired: Value = expired.json().await.expect("expired signup json");
+  assert_eq!(expired["error_code"], "invite_code_invalid");
+  assert_eq!(count_users_with_email(&ctx.pool, &expired_email).await, 0);
 
   let repeat = ctx
     .client

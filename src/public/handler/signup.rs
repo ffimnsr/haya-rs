@@ -50,9 +50,6 @@ pub async fn signup(
   rate_limit::record_attempt(&state.db, &rate_limit_key, SIGNUP_RATE_LIMIT_WINDOW_SECS).await?;
 
   let invite_code = invite_code_from_request(state.require_invite_code, req.invite_code.as_deref())?;
-  if let Some(code) = invite_code.as_deref() {
-    validate_invite_code(&state.db, code).await?;
-  }
 
   if req.email.is_none() {
     return Err(AuthError::ValidationFailed("Email is required.".to_string()));
@@ -88,6 +85,13 @@ pub async fn signup(
         TurnstileError::Rejected => AuthError::CaptchaFailed,
         TurnstileError::Unavailable => AuthError::CaptchaUnavailable,
       })?;
+  }
+
+  // Validate before the anti-enumeration email lookup so an invalid code cannot
+  // distinguish existing accounts from new ones. Consumption stays atomic in
+  // the insert transaction below.
+  if let Some(code) = invite_code.as_deref() {
+    validate_invite_code(&state.db, code).await?;
   }
 
   if let Some(ref email) = req.email {

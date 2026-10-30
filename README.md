@@ -167,6 +167,11 @@ haya user add --email user@example.com --password 'change-me'
 haya user update user@example.com --phone '+15555550123' --unban
 haya user verify user@example.com
 haya user delete user@example.com
+
+haya invite create --label design-partner --expires-in-hours 168
+haya invite create --label support --created-by admin@example.com
+haya invite list
+haya invite revoke 00000000-0000-0000-0000-000000000000
 ```
 
 Supported command groups:

@@ -929,6 +929,10 @@ async fn doctor(db: &PgPool, config: &RuntimeConfig) -> anyhow::Result<()> {
     issues.push("missing auth.audit_log_entries table".to_string());
   }
 
+  if config.require_invite_code && !table_exists(db, "auth", "invite_codes").await? {
+    issues.push("REQUIRE_INVITE_CODE requires the auth.invite_codes migration".to_string());
+  }
+
   print_json(&DoctorReport {
     database_connected,
     pid_file_present,
