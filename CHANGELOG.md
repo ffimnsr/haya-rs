@@ -9,6 +9,18 @@
 - add `DISABLE_SIGNUP` / `GOTRUE_DISABLE_SIGNUP` to close public signup
 - expose signup, invite, and Turnstile state in CLI settings, status, doctor, and config validation
 
+## 0.3.4 - 2026-10-30
+
+### Features
+
+- add one-time invite-code signup (`36181cf`)
+
+
+### Fixes
+
+- harden invite-code signup flow (`c835817`)
+
+
 ## 0.3.3 - 2026-10-30
 
 ### Features
