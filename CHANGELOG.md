@@ -8,6 +8,18 @@
 - add `DISABLE_SIGNUP` / `GOTRUE_DISABLE_SIGNUP` to close public signup
 - expose signup and Turnstile state in CLI settings, status, doctor, and config validation
 
+## 0.3.3 - 2026-10-30
+
+### Features
+
+- add turnstile if user have and disable signup env (`348d046`)
+
+
+### Fixes
+
+- enforce signup kill switch for new sso users (`437fbd6`)
+
+
 ## 0.3.2 - 2026-10-23
 
 ### Fixes
