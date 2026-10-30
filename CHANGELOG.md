@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- add optional Cloudflare Turnstile verification to signup (`TURNSTILE_*`)
+- add `DISABLE_SIGNUP` / `GOTRUE_DISABLE_SIGNUP` to close public signup
+- expose signup and Turnstile state in CLI settings, status, doctor, and config validation
+
 ## 0.3.2 - 2026-10-23
 
 ### Fixes

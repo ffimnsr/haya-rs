@@ -491,6 +491,8 @@ struct CliStatus {
   issuer: String,
   site_name: String,
   mailer_autoconfirm: bool,
+  signup_disabled: bool,
+  turnstile_enabled: bool,
   smtp_configured: bool,
   oidc_provider_count: usize,
   user_count: i64,
@@ -515,6 +517,8 @@ struct SettingsView {
   jwt_secret_len: usize,
   mfa_key_source: &'static str,
   mailer_autoconfirm: bool,
+  signup_disabled: bool,
+  turnstile_enabled: bool,
   smtp_configured: bool,
   dev_mode: bool,
 }
@@ -541,6 +545,8 @@ struct DoctorReport {
   server_process_reachable: bool,
   oidc_table_present: bool,
   audit_table_present: bool,
+  signup_disabled: bool,
+  turnstile_enabled: bool,
   smtp_configured: bool,
   site_url: String,
   issues: Vec<String>,
@@ -681,6 +687,8 @@ struct ConfigValidateReport {
   cors_allowed_origins: Vec<String>,
   allowed_redirect_origins: Vec<String>,
   allowed_redirect_path_prefixes: Vec<String>,
+  signup_disabled: bool,
+  turnstile_enabled: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -778,6 +786,8 @@ async fn show_status(db: &PgPool, state: &AppState, config: &RuntimeConfig) -> a
     issuer: config.issuer.clone(),
     site_name: config.site_name.clone(),
     mailer_autoconfirm: config.mailer_autoconfirm,
+    signup_disabled: config.signup_disabled,
+    turnstile_enabled: config.turnstile.is_some(),
     smtp_configured: config.smtp_configured,
     oidc_provider_count,
     user_count,
@@ -803,6 +813,8 @@ fn show_settings(config: &RuntimeConfig) -> anyhow::Result<()> {
     jwt_secret_len: config.jwt_secret_len,
     mfa_key_source: config.mfa_key_source,
     mailer_autoconfirm: config.mailer_autoconfirm,
+    signup_disabled: config.signup_disabled,
+    turnstile_enabled: config.turnstile.is_some(),
     smtp_configured: config.smtp_configured,
     dev_mode: config.dev_mode,
   })
@@ -875,6 +887,8 @@ async fn doctor(db: &PgPool, config: &RuntimeConfig) -> anyhow::Result<()> {
     server_process_reachable,
     oidc_table_present,
     audit_table_present,
+    signup_disabled: config.signup_disabled,
+    turnstile_enabled: config.turnstile.is_some(),
     smtp_configured: config.smtp_configured,
     site_url: config.site_url.clone(),
     issues,
@@ -1713,6 +1727,8 @@ fn validate_config(config: &RuntimeConfig) -> anyhow::Result<()> {
     cors_allowed_origins: config.cors_allowed_origins.clone(),
     allowed_redirect_origins: config.allowed_redirect_origins.clone(),
     allowed_redirect_path_prefixes: config.allowed_redirect_path_prefixes.clone(),
+    signup_disabled: config.signup_disabled,
+    turnstile_enabled: config.turnstile.is_some(),
   })
 }
 

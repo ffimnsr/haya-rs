@@ -12,6 +12,7 @@ mod utils;
 
 use std::env;
 use std::sync::Arc;
+use std::time::Duration;
 
 use base64::Engine as _;
 use clap::Parser;
@@ -22,6 +23,7 @@ use haya_passkey_rp::{
 use rand::RngCore;
 use tokio::sync::RwLock;
 
+use crate::auth::turnstile::TurnstileConfig;
 use crate::auth::{
   mfa,
   oidc,
@@ -58,6 +60,7 @@ struct RuntimeBootstrap {
   instance_id: Uuid,
   mailer: Option<Arc<Mailer>>,
   passkey: Option<Arc<PasskeyRp>>,
+  turnstile: Option<Arc<TurnstileConfig>>,
 }
 
 #[tokio::main]
@@ -141,6 +144,55 @@ fn env_flag_enabled(name: &str) -> bool {
       value == "1" || value.eq_ignore_ascii_case("true")
     })
     .unwrap_or(false)
+}
+
+fn parse_host_list_env(name: &str) -> Vec<String> {
+  env::var(name)
+    .map(|value| {
+      value
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>()
+    })
+    .unwrap_or_default()
+}
+
+fn hostnames_from_urls(values: &[&str]) -> Vec<String> {
+  let mut hosts = Vec::new();
+  for value in values {
+    let Ok(url) = Url::parse(value) else {
+      continue;
+    };
+    if let Some(host) = url.host_str() {
+      hosts.push(host.trim_end_matches('.').to_ascii_lowercase());
+    }
+  }
+  hosts.sort();
+  hosts.dedup();
+  hosts
+}
+
+fn build_turnstile(
+  secret_key: Option<String>,
+  allowed_hostnames: Vec<String>,
+  expected_action: Option<String>,
+  verify_url: Option<String>,
+  timeout_secs: Option<u64>,
+) -> anyhow::Result<Option<Arc<TurnstileConfig>>> {
+  let Some(secret_key) = secret_key.filter(|value| !value.trim().is_empty()) else {
+    return Ok(None);
+  };
+  let timeout = Duration::from_secs(timeout_secs.unwrap_or(5).max(1));
+  let config = TurnstileConfig::new(
+    secret_key,
+    allowed_hostnames,
+    expected_action,
+    verify_url,
+    timeout,
+  )?;
+  Ok(Some(Arc::new(config)))
 }
 
 fn build_passkey(
@@ -261,6 +313,29 @@ fn build_runtime_bootstrap(require_database: bool) -> anyhow::Result<RuntimeBoot
   allowed_redirect_origins.sort();
   allowed_redirect_origins.dedup();
   let site_name = env::var("SITE_NAME").unwrap_or_else(|_| "Haya".to_string());
+  let signup_disabled = env_flag_enabled("DISABLE_SIGNUP") || env_flag_enabled("GOTRUE_DISABLE_SIGNUP");
+  let mut turnstile_hostnames = parse_host_list_env("TURNSTILE_ALLOWED_HOSTNAMES");
+  if turnstile_hostnames.is_empty() {
+    let mut origin_values = vec![site_url.as_str()];
+    origin_values.extend(cors_allowed_origins.iter().map(String::as_str));
+    origin_values.extend(allowed_redirect_origins.iter().map(String::as_str));
+    turnstile_hostnames = hostnames_from_urls(&origin_values);
+  }
+  let turnstile_timeout_secs = env::var("TURNSTILE_TIMEOUT_SECS")
+    .ok()
+    .map(|value| {
+      value
+        .parse::<u64>()
+        .map_err(|error| anyhow::anyhow!("TURNSTILE_TIMEOUT_SECS must be an integer: {error}"))
+    })
+    .transpose()?;
+  let turnstile = build_turnstile(
+    env::var("TURNSTILE_SECRET_KEY").ok(),
+    turnstile_hostnames,
+    env::var("TURNSTILE_ACTION").ok(),
+    env::var("TURNSTILE_VERIFY_URL").ok(),
+    turnstile_timeout_secs,
+  )?;
   let passkey_enabled = env_flag_enabled("PASSKEY_ENABLED");
   let passkey_challenge_ttl_secs = if passkey_enabled {
     env::var("PASSKEY_CHALLENGE_TTL_SECS")
@@ -356,6 +431,8 @@ fn build_runtime_bootstrap(require_database: bool) -> anyhow::Result<RuntimeBoot
     pid_file,
     jwt_secret_len: jwt_secret.len(),
     mailer_autoconfirm,
+    signup_disabled,
+    turnstile: turnstile.clone(),
     smtp_configured,
     dev_mode,
     mfa_key_source,
@@ -369,6 +446,7 @@ fn build_runtime_bootstrap(require_database: bool) -> anyhow::Result<RuntimeBoot
     instance_id,
     mailer,
     passkey,
+    turnstile,
   })
 }
 
@@ -394,11 +472,24 @@ async fn build_app_state(bootstrap: &RuntimeBootstrap) -> anyhow::Result<AppStat
     oidc_providers: Arc::new(RwLock::new(oidc_providers)),
     oidc_jwks_cache: Arc::new(RwLock::new(std::collections::HashMap::new())),
     mailer_autoconfirm: bootstrap.config.mailer_autoconfirm,
+    signup_disabled: bootstrap.config.signup_disabled,
     mailer: bootstrap.mailer.clone(),
     passkey: bootstrap.passkey.clone(),
+    turnstile: bootstrap.turnstile.clone(),
   };
   if state.passkey.is_some() {
     tracing::info!("Passkey relying party is enabled");
+  }
+  if state.signup_disabled {
+    tracing::info!("Public signup is disabled");
+  }
+  if let Some(turnstile) = &state.turnstile {
+    tracing::info!(
+      config = ?turnstile,
+      "Cloudflare Turnstile verification is enabled for signup"
+    );
+  } else {
+    tracing::info!("Cloudflare Turnstile verification is disabled");
   }
   Ok(state)
 }
@@ -406,6 +497,52 @@ async fn build_app_state(bootstrap: &RuntimeBootstrap) -> anyhow::Result<AppStat
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn disabled_turnstile_requires_no_settings() {
+    assert!(
+      build_turnstile(None, Vec::new(), None, None, None)
+        .unwrap()
+        .is_none()
+    );
+  }
+
+  #[test]
+  fn enabled_turnstile_requires_allowed_hostnames() {
+    let error = build_turnstile(Some("secret".to_string()), Vec::new(), None, None, None).unwrap_err();
+
+    assert!(error.to_string().contains("TURNSTILE_ALLOWED_HOSTNAMES"));
+  }
+
+  #[test]
+  fn enabled_turnstile_accepts_hostnames_and_action() {
+    let secret = "top-secret-value".to_string();
+    let config = build_turnstile(
+      Some(secret.clone()),
+      vec!["App.Example.com".to_string()],
+      Some("signup".to_string()),
+      None,
+      Some(10),
+    )
+    .unwrap()
+    .expect("turnstile enabled");
+
+    let debug = format!("{config:?}");
+    assert!(debug.contains("<redacted>"));
+    assert!(!debug.contains(&secret));
+  }
+
+  #[test]
+  fn hostnames_are_derived_from_configured_origins() {
+    let hosts = hostnames_from_urls(&[
+      "https://app.example.com",
+      "https://auth.example.com/callback",
+      "https://APP.example.com",
+      "not a url",
+    ]);
+
+    assert_eq!(hosts, vec!["app.example.com", "auth.example.com"]);
+  }
 
   #[test]
   fn disabled_passkeys_require_no_rp_settings() {

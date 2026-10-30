@@ -11,6 +11,7 @@ use std::net::{
 };
 use uuid::Uuid;
 
+use crate::auth::turnstile::TurnstileError;
 use crate::auth::{
   password,
   rate_limit,
@@ -35,6 +36,26 @@ pub struct SignupRequest {
   pub password: Option<String>,
   pub phone: Option<String>,
   pub data: Option<serde_json::Value>,
+  /// Explicit Turnstile token. When absent, the GoTrue-compatible
+  /// `gotrue_meta_security.captcha_token` field is used instead.
+  pub turnstile_token: Option<String>,
+  pub gotrue_meta_security: Option<GoTrueMetaSecurity>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GoTrueMetaSecurity {
+  pub captcha_token: Option<String>,
+}
+
+impl SignupRequest {
+  fn captcha_token(&self) -> Option<&str> {
+    self.turnstile_token.as_deref().or_else(|| {
+      self
+        .gotrue_meta_security
+        .as_ref()
+        .and_then(|meta| meta.captcha_token.as_deref())
+    })
+  }
 }
 
 pub async fn signup(
@@ -42,6 +63,8 @@ pub async fn signup(
   ConnectInfo(client_addr): ConnectInfo<SocketAddr>,
   Json(req): Json<SignupRequest>,
 ) -> Result<Json<serde_json::Value>> {
+  ensure_signup_enabled(state.signup_disabled)?;
+
   let rate_limit_key = signup_ip_rate_limit_key(client_addr.ip());
   if rate_limit::is_limited(&state.db, &rate_limit_key, SIGNUP_RATE_LIMIT_ATTEMPTS).await? {
     return Err(AuthError::TooManyRequests);
@@ -71,6 +94,17 @@ pub async fn signup(
     return Err(AuthError::ValidationFailed(
       "Phone must be a valid E.164 number".to_string(),
     ));
+  }
+
+  if let Some(turnstile) = &state.turnstile {
+    let token = req.captcha_token().ok_or(AuthError::CaptchaFailed)?;
+    turnstile
+      .verify(&state.http_client, token)
+      .await
+      .map_err(|error| match error {
+        TurnstileError::Rejected => AuthError::CaptchaFailed,
+        TurnstileError::Unavailable => AuthError::CaptchaUnavailable,
+      })?;
   }
 
   if let Some(ref email) = req.email {
@@ -160,6 +194,13 @@ pub async fn signup(
   Ok(Json(serde_json::json!({})))
 }
 
+fn ensure_signup_enabled(signup_disabled: bool) -> Result<()> {
+  if signup_disabled {
+    return Err(AuthError::SignupDisabled);
+  }
+  Ok(())
+}
+
 fn signup_ip_rate_limit_key(client_ip: IpAddr) -> String {
   format!("signup-ip:{client_ip}")
 }
@@ -192,6 +233,48 @@ pub fn is_valid_e164_phone(phone: &str) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn signup_disabled_gate_is_explicit() {
+    assert!(matches!(
+      ensure_signup_enabled(true),
+      Err(AuthError::SignupDisabled)
+    ));
+    assert!(ensure_signup_enabled(false).is_ok());
+  }
+
+  #[test]
+  fn signup_request_accepts_gotrue_compatible_captcha_shape() {
+    let request: SignupRequest = serde_json::from_value(serde_json::json!({
+      "email": "user@example.com",
+      "password": "long-enough1",
+      "gotrue_meta_security": { "captcha_token": "compat-token" }
+    }))
+    .expect("GoTrue-compatible signup body");
+
+    assert_eq!(request.captcha_token(), Some("compat-token"));
+  }
+
+  #[test]
+  fn captcha_token_prefers_explicit_turnstile_field() {
+    let request = SignupRequest {
+      email: Some("user@example.com".to_string()),
+      password: Some("long-enough1".to_string()),
+      phone: None,
+      data: None,
+      turnstile_token: Some("explicit-token".to_string()),
+      gotrue_meta_security: Some(GoTrueMetaSecurity {
+        captcha_token: Some("compat-token".to_string()),
+      }),
+    };
+    assert_eq!(request.captcha_token(), Some("explicit-token"));
+
+    let compat = SignupRequest {
+      turnstile_token: None,
+      ..request
+    };
+    assert_eq!(compat.captcha_token(), Some("compat-token"));
+  }
 
   #[test]
   fn test_valid_emails() {

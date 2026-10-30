@@ -208,6 +208,13 @@ Supported command groups:
 - `SESSION_IDLE_TIMEOUT_SECS`: idle session timeout in seconds. Defaults to `86400`.
 - `INSTANCE_ID`: explicit UUID for the auth instance.
 - `MAILER_AUTOCONFIRM`: enables automatic confirmation when set to `true` or `1`.
+- `DISABLE_SIGNUP`: when `true` or `1`, `POST /signup` returns `403 signup_disabled`. Defaults to false.
+- `GOTRUE_DISABLE_SIGNUP`: GoTrue-compatible alias for `DISABLE_SIGNUP`.
+- `TURNSTILE_SECRET_KEY`: optional Cloudflare Turnstile secret. When set, signup requires a valid Turnstile token.
+- `TURNSTILE_ALLOWED_HOSTNAMES`: comma-separated hostnames allowed in the Turnstile response. When unset, hosts are derived from `SITE_URL`, `CORS_ALLOWED_ORIGINS`, and `ALLOWED_REDIRECT_ORIGINS`.
+- `TURNSTILE_ACTION`: optional expected Turnstile action value. Set to `signup` when the widget uses `action: "signup"`.
+- `TURNSTILE_VERIFY_URL`: optional siteverify URL override; defaults to Cloudflare's endpoint. Must be HTTPS except for loopback testing.
+- `TURNSTILE_TIMEOUT_SECS`: siteverify timeout in seconds. Defaults to `5`.
 - `CORS_ALLOWED_ORIGINS`: comma-separated list of allowed browser origins for CORS. If omitted, CORS is permissive in dev mode and defaults to `SITE_URL` otherwise.
 - `ALLOWED_REDIRECT_ORIGINS`: comma-separated list of allowed OIDC `redirect_to` origins, in addition to `SITE_URL`.
 - `ALLOWED_REDIRECT_PATH_PREFIXES`: optional comma-separated list of allowed path prefixes for OIDC `redirect_to` URLs. When set, redirects must match both an allowed origin and one of these prefixes.
@@ -222,6 +229,32 @@ Supported command groups:
 - `EMAIL_TEMPLATES_DIR`: directory containing override email templates. Defaults to `./templates/email`.
 - `HAYA_DEV_MODE`: when `JWT_SECRET` is unset, enables an ephemeral development JWT secret for local development only.
 - `HAYA_PID_FILE`: overrides the pid file path used by `haya reload` and `haya doctor`. Defaults to `/tmp/haya.pid`.
+
+### Signup controls
+
+`POST /signup` remains enabled by default. Set `DISABLE_SIGNUP=true` (or `GOTRUE_DISABLE_SIGNUP=true`) to reject every signup with `403 signup_disabled`.
+
+Cloudflare Turnstile is opt-in. Leaving `TURNSTILE_SECRET_KEY` unset preserves the previous signup behavior. When it is set, every signup must include a token:
+
+```json
+{
+  "email": "user@example.com",
+  "password": "long-enough1",
+  "turnstile_token": "<token>"
+}
+```
+
+The GoTrue-compatible field is also accepted:
+
+```json
+{
+  "email": "user@example.com",
+  "password": "long-enough1",
+  "gotrue_meta_security": { "captcha_token": "<token>" }
+}
+```
+
+Verification is fail-closed. A missing, rejected, expired, replayed, or hostname/action-mismatched token returns `400 captcha_failed`. A siteverify timeout, network failure, or unusable response returns `503 captcha_unavailable`. Tokens and secrets are never logged.
 
 ### systemd watchdog
 

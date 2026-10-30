@@ -7,3 +7,4 @@ pub(crate) mod passkey_repository;
 pub mod password;
 pub mod rate_limit;
 pub mod session;
+pub mod turnstile;

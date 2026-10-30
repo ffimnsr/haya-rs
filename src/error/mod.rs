@@ -36,6 +36,12 @@ pub enum AuthError {
   UserBanned,
   #[error("Too many requests")]
   TooManyRequests,
+  #[error("Signups are not allowed for this instance")]
+  SignupDisabled,
+  #[error("CAPTCHA verification failed")]
+  CaptchaFailed,
+  #[error("CAPTCHA verification is temporarily unavailable")]
+  CaptchaUnavailable,
   #[error("Passkeys are not enabled")]
   PasskeyDisabled,
   #[allow(dead_code)]
@@ -75,6 +81,9 @@ impl AuthError {
       AuthError::NotAdmin => StatusCode::FORBIDDEN,
       AuthError::UserBanned => StatusCode::FORBIDDEN,
       AuthError::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
+      AuthError::SignupDisabled => StatusCode::FORBIDDEN,
+      AuthError::CaptchaFailed => StatusCode::BAD_REQUEST,
+      AuthError::CaptchaUnavailable => StatusCode::SERVICE_UNAVAILABLE,
       AuthError::PasskeyDisabled => StatusCode::NOT_FOUND,
       AuthError::PasskeyRegistrationFailed | AuthError::PasskeyAuthenticationFailed => {
         StatusCode::BAD_REQUEST
@@ -98,6 +107,9 @@ impl AuthError {
       AuthError::NotAdmin => "not_admin",
       AuthError::UserBanned => "user_banned",
       AuthError::TooManyRequests => "too_many_requests",
+      AuthError::SignupDisabled => "signup_disabled",
+      AuthError::CaptchaFailed => "captcha_failed",
+      AuthError::CaptchaUnavailable => "captcha_unavailable",
       AuthError::PasskeyDisabled => "passkey_not_enabled",
       AuthError::PasskeyRegistrationFailed => "passkey_registration_failed",
       AuthError::PasskeyAuthenticationFailed => "passkey_authentication_failed",
@@ -185,6 +197,9 @@ mod tests {
     assert_eq!(AuthError::NotAdmin.error_code(), "not_admin");
     assert_eq!(AuthError::UserBanned.error_code(), "user_banned");
     assert_eq!(AuthError::TooManyRequests.error_code(), "too_many_requests");
+    assert_eq!(AuthError::SignupDisabled.error_code(), "signup_disabled");
+    assert_eq!(AuthError::CaptchaFailed.error_code(), "captcha_failed");
+    assert_eq!(AuthError::CaptchaUnavailable.error_code(), "captcha_unavailable");
     assert_eq!(AuthError::PasskeyDisabled.error_code(), "passkey_not_enabled");
     assert_eq!(
       AuthError::PasskeyRegistrationFailed.error_code(),
@@ -228,6 +243,12 @@ mod tests {
     assert_eq!(
       AuthError::TooManyRequests.status_code(),
       StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(AuthError::SignupDisabled.status_code(), StatusCode::FORBIDDEN);
+    assert_eq!(AuthError::CaptchaFailed.status_code(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+      AuthError::CaptchaUnavailable.status_code(),
+      StatusCode::SERVICE_UNAVAILABLE
     );
     assert_eq!(AuthError::PasskeyDisabled.status_code(), StatusCode::NOT_FOUND);
     assert_eq!(

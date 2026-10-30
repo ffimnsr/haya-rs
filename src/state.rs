@@ -7,6 +7,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::auth::oidc::OidcProviderConfig;
+use crate::auth::turnstile::TurnstileConfig;
 use crate::mailer::Mailer;
 
 #[derive(Debug, Clone)]
@@ -31,10 +32,14 @@ pub struct AppState {
   pub oidc_jwks_cache: Arc<RwLock<HashMap<String, crate::auth::oidc::CachedJwks>>>,
   /// When true, users can sign in without confirming their email
   pub mailer_autoconfirm: bool,
+  /// When true, `POST /signup` is rejected for every caller.
+  pub signup_disabled: bool,
   /// SMTP mailer; `None` when `SMTP_HOST` is not configured
   pub mailer: Option<Arc<Mailer>>,
   /// Validated WebAuthn relying party; `None` when passkeys are disabled.
   pub passkey: Option<Arc<PasskeyRp>>,
+  /// Optional Cloudflare Turnstile verification for public signup.
+  pub turnstile: Option<Arc<TurnstileConfig>>,
 }
 
 #[derive(Debug, Clone)]
@@ -55,6 +60,8 @@ pub struct RuntimeConfig {
   pub pid_file: String,
   pub jwt_secret_len: usize,
   pub mailer_autoconfirm: bool,
+  pub signup_disabled: bool,
+  pub turnstile: Option<Arc<TurnstileConfig>>,
   pub smtp_configured: bool,
   pub dev_mode: bool,
   pub mfa_key_source: &'static str,

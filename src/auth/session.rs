@@ -533,8 +533,10 @@ mod tests {
       oidc_providers: Arc::new(RwLock::new(HashMap::new())),
       oidc_jwks_cache: Arc::new(RwLock::new(HashMap::new())),
       mailer_autoconfirm: false,
+      signup_disabled: false,
       mailer: None,
       passkey: None,
+      turnstile: None,
     }
   }
 

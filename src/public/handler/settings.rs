@@ -16,12 +16,18 @@ pub async fn get_settings(
   let providers = state.oidc_providers.read().await;
   Ok(Json(settings_response(
     state.mailer_autoconfirm,
+    state.signup_disabled,
     crate::auth::oidc::provider_names(&providers),
     state.passkey.is_some(),
   )))
 }
 
-fn settings_response(mailer_autoconfirm: bool, providers: Vec<String>, passkey_enabled: bool) -> Value {
+fn settings_response(
+  mailer_autoconfirm: bool,
+  disable_signup: bool,
+  providers: Vec<String>,
+  passkey_enabled: bool,
+) -> Value {
   let mut external = Map::new();
   external.insert("email".to_owned(), Value::Bool(true));
   for provider in providers {
@@ -31,6 +37,7 @@ fn settings_response(mailer_autoconfirm: bool, providers: Vec<String>, passkey_e
 
   serde_json::json!({
     "mailer_autoconfirm": mailer_autoconfirm,
+    "disable_signup": disable_signup,
     "external": Value::Object(external),
     "mfa": {
       "totp": true,
@@ -45,15 +52,22 @@ mod tests {
 
   #[test]
   fn settings_advertise_passkeys_only_when_enabled() {
-    let disabled = settings_response(false, vec!["github".to_owned(), "passkey".to_owned()], false);
+    let disabled = settings_response(
+      false,
+      true,
+      vec!["github".to_owned(), "passkey".to_owned()],
+      false,
+    );
+    assert_eq!(disabled["disable_signup"], true);
     assert_eq!(disabled["external"]["email"], true);
     assert_eq!(disabled["external"]["github"], true);
     assert_eq!(disabled["external"]["passkey"], false);
     assert_eq!(disabled["mfa"]["totp"], true);
     assert_eq!(disabled["mfa"]["webauthn"], false);
 
-    let enabled = settings_response(true, vec!["github".to_owned()], true);
+    let enabled = settings_response(true, false, vec!["github".to_owned()], true);
     assert_eq!(enabled["mailer_autoconfirm"], true);
+    assert_eq!(enabled["disable_signup"], false);
     assert_eq!(enabled["external"]["passkey"], true);
     assert_eq!(enabled["mfa"]["webauthn"], true);
   }
