@@ -5,6 +5,7 @@ mod defaults;
 mod error;
 mod mailer;
 mod middleware;
+mod migration_sql;
 mod model;
 mod public;
 mod state;

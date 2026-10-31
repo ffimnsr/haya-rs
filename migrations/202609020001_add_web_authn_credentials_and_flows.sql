@@ -1,3 +1,4 @@
+-- !UP
 alter table auth.mfa_factors
   add column if not exists web_authn_credential_id bytea null;
 

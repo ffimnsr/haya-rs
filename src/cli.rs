@@ -35,6 +35,7 @@ use crate::auth::{
   session,
 };
 use crate::mailer::EmailKind;
+use crate::migration_sql::migration_up_sql;
 use crate::model::invite_code::{
   create_invite_code,
   list_invite_codes,
@@ -2331,34 +2332,6 @@ async fn count_if_table_exists(db: &PgPool, schema: &str, table: &str, sql: &str
   }
 
   count_query(db, sql).await
-}
-
-fn migration_up_sql(sql: &str) -> String {
-  let mut in_up = false;
-  let mut saw_marker = false;
-  let mut lines = Vec::new();
-
-  for line in sql.lines() {
-    match line.trim() {
-      "-- !UP" => {
-        in_up = true;
-        saw_marker = true;
-      },
-      "-- !DOWN" => {
-        in_up = false;
-      },
-      _ if in_up => lines.push(line),
-      _ => {},
-    }
-  }
-
-  if saw_marker {
-    let mut up_sql = lines.join("\n");
-    up_sql.push('\n');
-    up_sql
-  } else {
-    sql.to_string()
-  }
 }
 
 async fn count_query(db: &PgPool, sql: &str) -> anyhow::Result<i64> {
