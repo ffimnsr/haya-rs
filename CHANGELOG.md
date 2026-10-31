@@ -9,6 +9,13 @@
 - add `DISABLE_SIGNUP` / `GOTRUE_DISABLE_SIGNUP` to close public signup
 - expose signup, invite, and Turnstile state in CLI settings, status, doctor, and config validation
 
+## 0.3.5 - 2026-10-31
+
+### Fixes
+
+- apply down-only migrations as their up script (`324b74a`)
+
+
 ## 0.3.4 - 2026-10-30
 
 ### Features
